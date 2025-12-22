@@ -262,6 +262,8 @@ export default function DbMgmtPage() {
   useEffect(() => {
     if (selectedTable) {
       if (viewMode === 'data') {
+        // Clear old table data immediately when switching tables
+        setTableData(null);
         loadTableData();
       } else {
         loadTableSchema();
@@ -315,6 +317,8 @@ export default function DbMgmtPage() {
       setTableData(response.data);
     } catch (err) {
       console.error('Failed to load table data:', err);
+      // Clear table data on error to prevent showing stale data
+      setTableData(null);
     } finally {
       setTableLoading(false);
     }

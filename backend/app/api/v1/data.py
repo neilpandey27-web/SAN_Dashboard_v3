@@ -1724,6 +1724,96 @@ async def get_table_data(
         raise HTTPException(status_code=400, detail="Invalid table name")
 
     model = table_map[table_name]
+    
+    # Special handling for user_tenants table to show enriched data
+    if table_name == 'user_tenants':
+        # Join with User and Tenant tables to get meaningful information
+        query = db.query(
+            UserTenant.user_id,
+            User.username,
+            User.email,
+            User.role,
+            User.status,
+            UserTenant.tenant_id,
+            Tenant.name.label('tenant_name'),
+            UserTenant.assigned_at
+        ).join(User, UserTenant.user_id == User.id).join(Tenant, UserTenant.tenant_id == Tenant.id)
+        
+        # Apply filter
+        if filter_column and filter_value:
+            # Allow filtering by username, email, or tenant_name
+            if filter_column == 'username':
+                query = query.filter(User.username.ilike(f'%{filter_value}%'))
+            elif filter_column == 'email':
+                query = query.filter(User.email.ilike(f'%{filter_value}%'))
+            elif filter_column == 'tenant_name':
+                query = query.filter(Tenant.name.ilike(f'%{filter_value}%'))
+            elif filter_column == 'status':
+                query = query.filter(User.status.ilike(f'%{filter_value}%'))
+            elif filter_column == 'role':
+                query = query.filter(User.role.ilike(f'%{filter_value}%'))
+        
+        # Get total count before pagination
+        total_count = query.count()
+        
+        # Apply sorting
+        if sort_by:
+            if sort_by == 'username':
+                col = User.username
+            elif sort_by == 'email':
+                col = User.email
+            elif sort_by == 'tenant_name':
+                col = Tenant.name
+            elif sort_by == 'status':
+                col = User.status
+            elif sort_by == 'role':
+                col = User.role
+            elif sort_by == 'assigned_at':
+                col = UserTenant.assigned_at
+            else:
+                col = UserTenant.user_id
+            
+            if sort_order == 'desc':
+                query = query.order_by(col.desc())
+            else:
+                query = query.order_by(col.asc())
+        else:
+            # Default sort by assigned_at desc
+            query = query.order_by(UserTenant.assigned_at.desc())
+        
+        # Apply pagination
+        query = query.offset(offset)
+        if limit is not None:
+            rows = query.limit(limit).all()
+        else:
+            rows = query.all()
+        
+        # Convert to dict with enriched data
+        data = []
+        for row in rows:
+            data.append({
+                'user_id': row.user_id,
+                'username': row.username,
+                'email': row.email,
+                'role': row.role,
+                'status': row.status,
+                'tenant_id': row.tenant_id,
+                'tenant_name': row.tenant_name,
+                'assigned_at': row.assigned_at.isoformat() if row.assigned_at else None
+            })
+        
+        columns = ['user_id', 'username', 'email', 'role', 'status', 'tenant_id', 'tenant_name', 'assigned_at']
+        
+        return {
+            'table_name': table_name,
+            'columns': columns,
+            'data': data,
+            'total_count': total_count,
+            'limit': limit,
+            'offset': offset
+        }
+    
+    # Default handling for all other tables
     query = db.query(model)
 
     # Apply filter
