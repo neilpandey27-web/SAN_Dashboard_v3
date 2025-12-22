@@ -334,9 +334,11 @@ def process_dataframe(df: pd.DataFrame, model_class, report_date: date) -> pd.Da
         'id': 'volume_id' if model_class == CapacityVolume else 'id',
     }
     
-    # Special rename for CapacityVolume: capacity_gib -> provisioned_capacity_gib
+    # Special renames for CapacityVolume
     if model_class == CapacityVolume:
         column_renames['capacity_gib'] = 'provisioned_capacity_gib'
+        column_renames['name'] = 'volume_name'
+        column_renames['pool'] = 'pool_name'
     
     for old_name, new_name in column_renames.items():
         if old_name in df.columns and new_name not in df.columns:
@@ -519,9 +521,9 @@ def parse_hosts_to_mapping(
         if pd.isna(hosts_str) or not hosts_str:
             continue
         
-        volume_name = row.get('name')
+        volume_name = row.get('volume_name')
         storage_system = row.get('storage_system_name', row.get('storage_system'))
-        pool = row.get('pool')
+        pool_name = row.get('pool_name')
         
         if not volume_name or not storage_system:
             continue
@@ -533,7 +535,7 @@ def parse_hosts_to_mapping(
             mappings.append({
                 'volume_name': volume_name,
                 'storage_system': storage_system,
-                'pool': pool,
+                'pool_name': pool_name,
                 'host_name': host_name,
                 'mapping_date': report_date
             })
@@ -666,10 +668,10 @@ def insert_data_with_duplicate_check(
         )
         
         # Build a readable identifier for the record
-        identifier = record.get('name')
+        identifier = record.get('volume_name') or record.get('name')
         if not identifier or identifier == 'None':
             # For disks without names, use pool + storage_system
-            identifier = f"{record.get('storage_system_name', 'Unknown')}/{record.get('pool', 'Unknown')}"
+            identifier = f"{record.get('storage_system_name', 'Unknown')}/{record.get('pool_name') or record.get('pool', 'Unknown')}"
         
         # Check for within-file duplicates (should not happen for hosts after aggregation)
         if key_tuple in session_keys_seen:

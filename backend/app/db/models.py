@@ -334,10 +334,10 @@ class CapacityVolume(Base):
     
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     report_date: Mapped[datetime] = mapped_column(Date, nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    volume_name: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_system_id: Mapped[int] = mapped_column(Integer, ForeignKey('storage_systems.id'), nullable=False)
     storage_system_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    pool: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    pool_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     upload_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('upload_logs.id'), nullable=True)
     
     # Status
@@ -381,8 +381,8 @@ class CapacityVolume(Base):
     system = relationship('StorageSystem', back_populates='capacity_volumes')
     
     __table_args__ = (
-        UniqueConstraint('report_date', 'name', 'storage_system_name', 'pool', name='uq_volume_report_name_system_pool'),
-        Index('ix_capacity_volumes_pool', 'pool'),
+        UniqueConstraint('report_date', 'volume_name', 'storage_system_name', 'pool_name', name='uq_volume_report_name_system_pool'),
+        Index('ix_capacity_volumes_pool', 'pool_name'),
         Index('ix_capacity_volumes_system', 'storage_system_name'),
         Index('ix_capacity_volumes_utilization', 'used_capacity_pct'),
     )
@@ -508,7 +508,7 @@ class VolumeHostMapping(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     volume_name: Mapped[str] = mapped_column(String(255), nullable=False)
     storage_system: Mapped[str] = mapped_column(String(255), nullable=False)
-    pool: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    pool_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     host_name: Mapped[str] = mapped_column(String(255), nullable=False)
     mapping_date: Mapped[datetime] = mapped_column(Date, nullable=False)
     upload_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('upload_logs.id'), nullable=True)

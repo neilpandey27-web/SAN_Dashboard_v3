@@ -128,7 +128,7 @@ async def upload_excel(
     unique_keys_map = {
         'Storage_Systems': ['report_date', 'name'],
         'Storage_Pools': ['report_date', 'name', 'storage_system_name'],
-        'Capacity_Volumes': ['report_date', 'name', 'storage_system_name', 'pool'],
+        'Capacity_Volumes': ['report_date', 'volume_name', 'storage_system_name', 'pool_name'],
         'Inventory_Hosts': ['report_date', 'name'],
         'Capacity_Hosts': ['report_date', 'name'],
         'Inventory_Disks': ['report_date', 'name', 'storage_system_name'],
@@ -236,9 +236,9 @@ async def upload_excel(
                     else:
                         # Capture filtered record with full row data
                         storage_system_name = record.get('storage_system_name', 'Unknown')
-                        identifier = record.get('name')
+                        identifier = record.get('volume_name') or record.get('name')
                         if not identifier:
-                            identifier = f"{storage_system_name}/{record.get('pool', 'Unknown')}"
+                            identifier = f"{storage_system_name}/{record.get('pool_name') or record.get('pool', 'Unknown')}"
 
                         # Remove storage_system_id from the record for display (it's None anyway)
                         display_record = {k: v for k, v in record.items() if k != 'storage_system_id'}
@@ -809,11 +809,11 @@ async def get_system_detail(
 
     # Get volumes count by pool
     volumes_by_pool = db.query(
-        CapacityVolume.pool,
+        CapacityVolume.pool_name,
         func.count(CapacityVolume.id).label('count')
     ).filter(
         CapacityVolume.storage_system_id == system_id
-    ).group_by(CapacityVolume.pool).all()
+    ).group_by(CapacityVolume.pool_name).all()
 
     # Build response
     total_cap = system.usable_capacity_gib or 0
@@ -905,7 +905,7 @@ async def get_system_pools(
     for p in pools:
         # Count volumes for this pool
         volume_count = db.query(func.count(CapacityVolume.id)).filter(
-            CapacityVolume.pool == p.name,
+            CapacityVolume.pool_name == p.name,
             CapacityVolume.storage_system_name == system_name
         ).scalar() or 0
 
@@ -993,14 +993,14 @@ async def get_pool_volumes(
 ):
     """Get all volumes in a specific pool."""
     volumes = db.query(CapacityVolume).filter(
-        CapacityVolume.pool == pool_name,
+        CapacityVolume.pool_name == pool_name,
         CapacityVolume.storage_system_name == storage_system_name
-    ).order_by(CapacityVolume.name).all()
+    ).order_by(CapacityVolume.volume_name).all()
 
     volume_data = [
         {
             "id": v.id,
-            "name": v.name,
+            "name": v.volume_name,
             "volser": v.volser,
             "storage_virtual_machine": v.storage_virtual_machine,
             "status": v.status,
@@ -1030,7 +1030,7 @@ async def get_volume_hosts(
 ):
     """Get all hosts connected to a specific volume."""
     volume = db.query(CapacityVolume).filter(
-        CapacityVolume.name == volume_name,
+        CapacityVolume.volume_name == volume_name,
         CapacityVolume.storage_system_name == storage_system_name
     ).first()
 
