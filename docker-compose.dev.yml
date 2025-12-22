@@ -1,0 +1,54 @@
+version: '3.8'
+
+# Development Docker Compose with SQLite (faster, easier)
+# Use this for local development instead of docker-compose.yml
+
+services:
+  # FastAPI Backend with SQLite
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: storage_insights_backend
+    environment:
+      - DATABASE_URL=sqlite:///./storage_insights.db
+      - SECRET_KEY=${SECRET_KEY:-super-secret-key-change-in-production}
+      - DEBUG=true
+      - CORS_ORIGINS=["http://localhost:3000","http://frontend:3000"]
+      - FRONTEND_URL=http://localhost:3000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend:/app
+      - backend_data:/app/data
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - app_network
+
+  # Next.js Frontend (Development mode)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+      target: development
+    container_name: storage_insights_frontend
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+      - NODE_ENV=development
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - app_network
+
+networks:
+  app_network:
+    driver: bridge
+
+volumes:
+  backend_data:

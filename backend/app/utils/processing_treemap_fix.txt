@@ -1,0 +1,23 @@
+Lines 733-737: Root node with actual capacity
+    result.append({
+        'name': 'All Storage',
+        'storage_system': '',
+        'capacity_tb': gib_to_tb(total_capacity),
+        'utilization_pct': 0
+    })
+
+Lines 739-747: Calculate system capacities
+    system_capacities = {}
+    for pool in pools:
+        sys_name = pool.storage_system_name
+        if sys_name not in system_capacities:
+            system_capacities[sys_name] = 0
+        system_capacities[sys_name] += (pool.usable_capacity_gib or 0)
+
+Lines 753-757: System nodes with actual capacity
+    result.append({
+        'name': pool.storage_system_name,
+        'storage_system': 'All Storage',
+        'capacity_tb': gib_to_tb(system_capacities[pool.storage_system_name]),
+        'utilization_pct': 0
+    })

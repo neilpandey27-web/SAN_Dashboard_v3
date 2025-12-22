@@ -1,0 +1,309 @@
+================================================================================
+STORAGE INSIGHTS DASHBOARD - VERSION 5.1.0
+================================================================================
+
+Release Date: December 18, 2024
+
+================================================================================
+MAJOR CHANGES
+================================================================================
+
+1. DUAL UTILIZATION GAUGES
+   - Split single "Overall Utilization" gauge into two side-by-side gauges
+   - "Overall Provisioned Capacity Utilization" - Volume-based metric
+   - "Overall Storage System Utilization" - System-based metric
+   - Provides both provisioned and system-level visibility
+
+2. CHART BLOCK TITLE UPDATES
+   - "Available" renamed to "Unused Provisioned Capacity"
+   - More accurate terminology for provisioned capacity reporting
+   - Consistent naming across all capacity-related metrics
+
+3. COMPREHENSIVE DOCUMENTATION
+   - Added DASHBOARD_CHART_BLOCKS.md reference guide
+   - Documents all 13 chart block categories with formulas
+   - Includes data sources, calculations, and display logic
+   - Summary table for quick reference
+
+================================================================================
+NEW CHART BLOCKS
+================================================================================
+
+1. Overall Provisioned Capacity Utilization
+   - Data Source: capacity_volumes table
+   - Formula: (SUM(used_capacity_gib) / SUM(provisioned_capacity_gib)) * 100
+   - Shows: Percentage of provisioned capacity actually being used
+   - Display: Gauge chart (0-100%) with color coding
+   - Color Scheme:
+     * Green (0-50%): Healthy
+     * Yellow (50-75%): Warning
+     * Orange (75-90%): Critical
+     * Red (90-100%): Urgent
+
+2. Overall Storage System Utilization
+   - Data Source: storage_systems table
+   - Formula: ((SUM(usable_capacity_gib) - SUM(available_capacity_gib)) / SUM(usable_capacity_gib)) * 100
+   - Shows: System-level utilization based on physical capacity
+   - Display: Gauge chart (0-100%) with same color coding
+   - Purple gauge bar to distinguish from provisioned utilization
+
+================================================================================
+CHART TITLE CHANGES
+================================================================================
+
+Before v5.1.0:
+- 📊 Available
+- Overall Utilization (single gauge)
+
+After v5.1.0:
+- 📊 Unused Provisioned Capacity
+- Overall Provisioned Capacity Utilization (left gauge)
+- Overall Storage System Utilization (right gauge)
+
+================================================================================
+TECHNICAL DETAILS
+================================================================================
+
+Backend Changes (app/api/v1/data.py):
+- Added total_available_provisioned_gib calculation from volumes
+- Added system_usable_capacity_gib calculation
+- Added system_available_capacity_gib calculation
+- Added provisioned_utilization_pct metric
+- Added system_utilization_pct metric
+- Rounded total_available_tb to 2 decimal places
+- Maintained backward compatibility with avg_utilization_pct
+
+Frontend Changes (frontend/app/overview/page.tsx):
+- Updated "Available" card title to "Unused Provisioned Capacity"
+- Split single gauge (Col md={6}) into two gauges (Col md={3} each)
+- Added first gauge: Overall Provisioned Capacity Utilization
+- Added second gauge: Overall Storage System Utilization
+- Adjusted font sizes for two-column layout
+- Different gauge bar colors (blue vs purple)
+- Reduced margins for compact side-by-side display
+
+Documentation:
+- DASHBOARD_CHART_BLOCKS.md: Comprehensive 19KB reference document
+  * All chart blocks documented with formulas
+  * SQL queries and Python code examples
+  * Table sources and key fields listed
+  * Display logic and visualization details
+  * Summary table with quick reference
+  * Version history section
+
+================================================================================
+WHY TWO UTILIZATION METRICS?
+================================================================================
+
+Different Perspectives on Storage Usage:
+
+1. Provisioned Capacity Utilization (Volume-Based):
+   - Shows how efficiently allocated storage is being used
+   - Based on actual volume-level data
+   - Answers: "Of all storage we've provisioned, how much is used?"
+   - Better for: Capacity planning, volume optimization
+   - More granular and accurate
+
+2. Storage System Utilization (System-Based):
+   - Shows physical storage array utilization
+   - Based on system-level hardware capacity
+   - Answers: "How full are our storage arrays?"
+   - Better for: Hardware planning, system expansion
+   - Traditional metric for storage management
+
+Example Scenario:
+- Provisioned Capacity: 100 TiB allocated across volumes
+- Used Provisioned: 60 TiB actually written to volumes
+- System Usable: 120 TiB physical capacity
+- System Available: 55 TiB free space
+
+Results:
+- Provisioned Utilization: 60/100 = 60%
+- System Utilization: (120-55)/120 = 54.2%
+
+Both metrics provide valuable insights from different angles.
+
+================================================================================
+CALCULATION FORMULAS
+================================================================================
+
+Unused Provisioned Capacity:
+```sql
+SELECT ROUND(SUM(available_capacity_gib) / 1024, 2) AS unused_tb
+FROM capacity_volumes
+WHERE report_date = (SELECT MAX(report_date) FROM capacity_volumes)
+```
+
+Overall Provisioned Capacity Utilization:
+```sql
+SELECT 
+    ROUND((SUM(used_capacity_gib) / SUM(provisioned_capacity_gib)) * 100, 1) AS pct
+FROM capacity_volumes
+WHERE report_date = (SELECT MAX(report_date) FROM capacity_volumes)
+```
+
+Overall Storage System Utilization:
+```sql
+SELECT 
+    ROUND(((SUM(usable_capacity_gib) - SUM(available_capacity_gib)) / 
+           SUM(usable_capacity_gib)) * 100, 1) AS pct
+FROM storage_systems
+WHERE report_date = (SELECT MAX(report_date) FROM storage_systems)
+```
+
+================================================================================
+UPGRADE INSTRUCTIONS
+================================================================================
+
+This is a minor update with no database changes required.
+
+1. Stop the application:
+   pm2 stop all
+
+2. Update code to v5.1.0:
+   - Extract new version or pull from git (tag v5.1.0)
+
+3. Restart application:
+   cd backend && pm2 start ecosystem.config.cjs
+   cd frontend && pm2 start ecosystem.config.cjs
+
+4. Verify changes:
+   - Check Overview dashboard shows two utilization gauges
+   - Verify "Unused Provisioned Capacity" chart title
+   - Both gauges should display different percentages
+   - Review DASHBOARD_CHART_BLOCKS.md for reference
+
+No database migration required for this release.
+
+================================================================================
+TESTING CHECKLIST
+================================================================================
+
+After upgrading, verify:
+
+✓ Overview Dashboard Layout:
+  - Four KPI cards in top row (Total, Used, Unused, Savings)
+  - Three count cards on left (Systems, Pools, Hosts)
+  - Two utilization gauges on right (side by side)
+
+✓ Chart Titles:
+  - "Total Provisioned Capacity" (was "Total Capacity")
+  - "Used Provisioned Capacity" (was "Used Capacity")
+  - "Unused Provisioned Capacity" (was "Available")
+  - "Overall Provisioned Capacity Utilization" (new)
+  - "Overall Storage System Utilization" (new)
+
+✓ Gauge Functionality:
+  - Both gauges display percentages (0-100%)
+  - Color coding works (green/yellow/orange/red)
+  - Values are different (provisioned vs system)
+  - Gauges are same size and aligned
+
+✓ Calculations:
+  - Unused Provisioned Capacity = sum of available_capacity_gib
+  - Provisioned Utilization = (used/provisioned) * 100
+  - System Utilization = ((usable-available)/usable) * 100
+
+✓ Documentation:
+  - DASHBOARD_CHART_BLOCKS.md file exists
+  - Contains all chart block definitions
+  - Formulas are correct and readable
+
+================================================================================
+BREAKING CHANGES
+================================================================================
+
+None. This is a backward-compatible update.
+
+The following are maintained for compatibility:
+- API response includes avg_utilization_pct (same as provisioned_utilization_pct)
+- All existing endpoints continue to work
+- Database schema unchanged
+
+================================================================================
+KNOWN ISSUES
+================================================================================
+
+None at this time.
+
+================================================================================
+FILE CHANGES
+================================================================================
+
+Modified:
+- backend/app/api/v1/data.py (enhanced KPI calculations)
+- frontend/app/overview/page.tsx (gauge layout and titles)
+
+Added:
+- DASHBOARD_CHART_BLOCKS.md (comprehensive documentation)
+- VERSION_v5.1.0.txt (this file)
+
+================================================================================
+DOCUMENTATION REFERENCE
+================================================================================
+
+For detailed information about all chart blocks, see:
+- DASHBOARD_CHART_BLOCKS.md - Complete reference guide
+
+Key sections in DASHBOARD_CHART_BLOCKS.md:
+1. KPI Cards (4 cards)
+2. Resource Count Cards (3 cards)
+3. Utilization Gauges (2 gauges)
+4. Critical Capacity Alerts
+5. Capacity Forecasting
+6. Top Systems by Capacity
+7. System Utilization Distribution
+8. Capacity Treemap
+9. Simple vs Weighted Average Comparison
+10. Top 20 Hosts by Consumption
+11. Storage Efficiency & Savings
+12. Capacity by Storage Type
+13. Intelligent Recommendations
+
+Each section includes:
+- Chart block title
+- Primary table(s)
+- Key fields
+- Calculation formula (SQL)
+- Display logic
+- Backend code example
+
+================================================================================
+COMPATIBILITY
+================================================================================
+
+- Python: 3.9+
+- Node.js: 18+
+- SQLite: 3.35+
+- Browser: Modern browsers (Chrome, Firefox, Edge, Safari)
+
+Requires: v5.0.0 database schema (provisioned_capacity_gib column)
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+Future enhancements planned:
+- Additional utilization breakdown charts
+- Trend analysis for provisioned vs system utilization
+- Historical comparison of both metrics
+- Alerting based on utilization thresholds
+
+================================================================================
+VERSION HISTORY
+================================================================================
+
+v5.1.0 (Dec 18, 2024):
+- Added dual utilization gauges
+- Renamed "Available" to "Unused Provisioned Capacity"
+- Added comprehensive chart blocks documentation
+
+v5.0.0 (Dec 18, 2024):
+- FlashSystem preprocessing
+- Renamed capacity_gib to provisioned_capacity_gib
+- Updated Total/Used Capacity to use volumes table
+
+v4.2.0 and earlier:
+- Various dashboard enhancements
+
+================================================================================

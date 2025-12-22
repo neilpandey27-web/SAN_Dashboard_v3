@@ -1,0 +1,52 @@
+╔══════════════════════════════════════════════════════════════════════╗
+║          OneIT SAN Analytics - CLI Import Quick Reference          ║
+╚══════════════════════════════════════════════════════════════════════╝
+
+📦 LOCATION
+   webapp/backend/import_data.py
+
+🚀 BASIC USAGE
+   python import_data.py /path/to/file.xlsx
+
+🎯 COMMON COMMANDS
+   # Import file
+   python import_data.py data.xlsx
+
+   # Dry run (validate only)
+   python import_data.py data.xlsx --dry-run
+
+   # Import with specific user
+   python import_data.py data.xlsx --user-id 1
+
+   # Show help
+   python import_data.py --help
+
+🐳 DOCKER USAGE
+   # Copy file to container
+   docker cp data.xlsx storage_insights_backend:/app/data.xlsx
+
+   # Run import
+   docker exec storage_insights_backend python import_data.py /app/data.xlsx
+
+💻 LOCAL DEVELOPMENT
+   cd webapp/backend
+   python import_data.py /path/to/file.xlsx
+
+⚡ BENEFITS
+   • 3-5x faster than GUI
+   • No HTTP overhead
+   • No browser timeouts
+   • Scriptable & automatable
+   • Perfect for large files
+
+📊 EXIT CODES
+   0 = Success
+   1 = Error
+
+🔧 TROUBLESHOOTING
+   • Run from backend directory
+   • Use --dry-run first to validate
+   • Check docker-compose ps (if using Docker)
+   • Ensure .xlsx or .xls format
+
+📖 Full documentation: webapp/CLI_IMPORT_GUIDE.md
