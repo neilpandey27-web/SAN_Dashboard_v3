@@ -11,7 +11,7 @@ from app.db.database import get_db
 from app.db.models import (
     User, StorageSystem, StoragePool, CapacityVolume,
     CapacityHost, CapacityDisk, Department,
-    VolumeHostMapping, Alert, UploadLog, UserActivityLog,
+    Alert, UploadLog, UserActivityLog,
     TenantPoolMapping, Tenant, UserTenant, HostTenantMapping, MdiskSystemMapping
 )
 from app.db.schemas import (
@@ -23,7 +23,7 @@ from app.core.config import settings
 from app.utils.processing import (
     validate_excel_file, process_dataframe, calculate_pool_utilization,
     calculate_disk_used_capacity, clean_column_name,
-    parse_hosts_to_mapping, insert_data_with_duplicate_check,
+    insert_data_with_duplicate_check,
     generate_alerts_from_pools, get_overview_kpis, get_top_systems_by_usage,
     get_utilization_distribution, get_forecasting_data, get_storage_types_distribution,
     get_treemap_data, gib_to_tb, calculate_utilization_pct, calculate_days_until_full,
@@ -287,20 +287,6 @@ async def upload_excel(
                 CapacityVolume,
                 report_date
             )
-            host_mappings = parse_hosts_to_mapping(volumes_df, report_date)
-
-            for mapping in host_mappings:
-                existing = db.query(VolumeHostMapping).filter(
-                    VolumeHostMapping.volume_name == mapping['volume_name'],
-                    VolumeHostMapping.storage_system == mapping['storage_system'],
-                    VolumeHostMapping.host_name == mapping['host_name'],
-                    VolumeHostMapping.mapping_date == mapping['mapping_date']
-                ).first()
-
-                if not existing:
-                    mapping['upload_id'] = upload_log_id
-                    db_mapping = VolumeHostMapping(**mapping)
-                    db.add(db_mapping)
 
         # Generate alerts for pools exceeding thresholds
         alerts = generate_alerts_from_pools(db, report_date)
@@ -468,7 +454,6 @@ async def delete_upload_data(
         # to avoid foreign key constraint violations
         tables_to_clean = [
             # Child tables (have FK to storage_systems)
-            VolumeHostMapping,
             Department,
             CapacityDisk,
             CapacityHost,
@@ -1066,7 +1051,7 @@ async def get_volume_hosts(
     ]
 
     return {"hosts": host_data, "total": len(host_data),
-            "volume_info": {"name": volume.name, "capacity_tb": gib_to_tb(volume.provisioned_capacity_gib or 0)}}
+            "volume_info": {"name": volume.volume_name, "capacity_tb": gib_to_tb(volume.provisioned_capacity_gib or 0)}}
 
 
 # ============================================================================
@@ -1602,7 +1587,6 @@ async def get_available_tables(
         {'name': 'capacity_hosts', 'label': '🖥️ Capacity Hosts', 'category': 'Core Data'},
         {'name': 'capacity_disks', 'label': '💿 Capacity Disks', 'category': 'Core Data'},
         {'name': 'departments', 'label': '🏢 Departments', 'category': 'Core Data'},
-        {'name': 'volume_host_mappings', 'label': '🔗 Volume-Host Mappings', 'category': 'Core Data'},
 
         # Application/Management Tables
         {'name': 'users', 'label': '👤 Users', 'category': 'Management'},
@@ -1640,7 +1624,6 @@ async def get_table_schema(
         'capacity_hosts': CapacityHost,
         'capacity_disks': CapacityDisk,
         'departments': Department,
-        'volume_host_mappings': VolumeHostMapping,
 
         # Application/Management Tables
         'users': User,
@@ -1724,7 +1707,6 @@ async def get_table_data(
         'capacity_hosts': CapacityHost,
         'capacity_disks': CapacityDisk,
         'departments': Department,
-        'volume_host_mappings': VolumeHostMapping,
 
         # Application/Management Tables
         'users': User,

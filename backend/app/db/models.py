@@ -498,24 +498,4 @@ class Department(Base):
     )
 
 
-class VolumeHostMapping(Base):
-    """
-    Junction table mapping volumes to hosts.
-    Parsed from the 'hosts' field in CapacityVolume.
-    """
-    __tablename__ = 'volume_host_mappings'
-    
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    volume_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    storage_system: Mapped[str] = mapped_column(String(255), nullable=False)
-    pool_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-    host_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    mapping_date: Mapped[datetime] = mapped_column(Date, nullable=False)
-    upload_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey('upload_logs.id'), nullable=True)
-    
-    __table_args__ = (
-        UniqueConstraint('volume_name', 'storage_system', 'host_name', 'mapping_date', 
-                        name='uq_volume_host_mapping'),
-        Index('ix_volume_host_volume', 'volume_name'),
-        Index('ix_volume_host_host', 'host_name'),
-    )
+

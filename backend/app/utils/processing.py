@@ -11,8 +11,7 @@ import io
 
 from app.db.models import (
     StorageSystem, StoragePool, CapacityVolume,
-    CapacityHost, CapacityDisk, Department,
-    VolumeHostMapping, Alert
+    CapacityHost, CapacityDisk, Department, Alert
 )
 
 
@@ -502,45 +501,6 @@ def calculate_overhead_used_capacity(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
-
-def parse_hosts_to_mapping(
-    volumes_df: pd.DataFrame,
-    report_date: date
-) -> List[Dict[str, Any]]:
-    """
-    Parse the 'hosts' column from volumes and create volume-host mapping records.
-    The hosts column contains comma-separated host names.
-    """
-    mappings = []
-    
-    if 'hosts' not in volumes_df.columns:
-        return mappings
-    
-    for _, row in volumes_df.iterrows():
-        hosts_str = row.get('hosts')
-        if pd.isna(hosts_str) or not hosts_str:
-            continue
-        
-        volume_name = row.get('volume_name')
-        storage_system = row.get('storage_system_name', row.get('storage_system'))
-        pool_name = row.get('pool_name')
-        
-        if not volume_name or not storage_system:
-            continue
-        
-        # Parse comma-separated hosts
-        hosts = [h.strip() for h in str(hosts_str).split(',') if h.strip()]
-        
-        for host_name in hosts:
-            mappings.append({
-                'volume_name': volume_name,
-                'storage_system': storage_system,
-                'pool_name': pool_name,
-                'host_name': host_name,
-                'mapping_date': report_date
-            })
-    
-    return mappings
 
 
 def aggregate_host_duplicates(records: List[Dict[str, Any]], unique_keys: List[str]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:

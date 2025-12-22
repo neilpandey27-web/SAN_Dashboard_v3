@@ -133,18 +133,6 @@ FIELD_CATEGORIES: Dict[str, Dict[str, FieldCategory]] = {
         "email": "Imported",
     },
     
-    "volume_host_mappings": {
-        # All fields imported (parsed from volumes)
-        "id": "Imported",
-        "report_date": "Imported",
-        "created_at": "Imported",
-        "volume_name": "Imported",
-        "storage_system": "Imported",
-        "pool": "Imported",
-        "host_name": "Imported",
-        "mapping_date": "Imported",
-    },
-    
     "alerts": {
         # All fields are system-generated
         "id": "Calculated",
