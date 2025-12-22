@@ -437,10 +437,11 @@ def calculate_flashsystem_available_capacity(df: pd.DataFrame) -> pd.DataFrame:
     Calculate available_capacity_gib for FlashSystem volumes.
     
     For FlashSystem storage systems (A9K-A1, A9KR-R1, A9KR-R2), the available_capacity_gib
-    field is usually blank. We calculate it using the formula:
+    field is ALWAYS recalculated using the formula:
     available_capacity_gib = provisioned_capacity_gib - used_capacity_gib
     
     This preprocessing applies only to volumes from these specific FlashSystem storage systems.
+    Any existing values in the Excel file are overwritten with the calculated value.
     """
     FLASHSYSTEM_NAMES = ['A9K-A1', 'A9KR-R1', 'A9KR-R2']
     
@@ -453,13 +454,12 @@ def calculate_flashsystem_available_capacity(df: pd.DataFrame) -> pd.DataFrame:
     # Create a mask for FlashSystem volumes
     flashsystem_mask = df['storage_system_name'].isin(FLASHSYSTEM_NAMES)
     
-    # Calculate available_capacity_gib for FlashSystem volumes
-    # Only update if available_capacity_gib is blank/null
-    df.loc[flashsystem_mask & df['available_capacity_gib'].isna(), 'available_capacity_gib'] = \
-        df.loc[flashsystem_mask & df['available_capacity_gib'].isna()].apply(
-            lambda row: (row.get('provisioned_capacity_gib') or 0) - (row.get('used_capacity_gib') or 0),
-            axis=1
-        )
+    # ALWAYS calculate available_capacity_gib for FlashSystem volumes
+    # This overwrites any existing values from Excel
+    df.loc[flashsystem_mask, 'available_capacity_gib'] = df.loc[flashsystem_mask].apply(
+        lambda row: (row.get('provisioned_capacity_gib') or 0) - (row.get('used_capacity_gib') or 0),
+        axis=1
+    )
     
     return df
 
