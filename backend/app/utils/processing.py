@@ -854,51 +854,82 @@ def get_storage_types_distribution(db: Session, report_date: date) -> List[Dict]
 
 def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     """
-    Get hierarchical data for treemap visualization with two calculation methods.
+    Get hierarchical data for treemap visualization using capacity_volumes table.
+    
+    Hierarchy: All Storage → Storage System → Pool → Volumes
     
     Returns both simple average and weighted average treemap data with full capacity details.
     Each node includes: total_capacity_gib, used_capacity_gib, available_capacity_gib, utilization_pct
     
     Returns:
         {
-            'simple_average': [...],  # Average of pool utilization percentages
+            'simple_average': [...],  # Average of volume utilization percentages
             'weighted_average': [...]  # Weighted by actual capacity usage
         }
     """
-    pools = db.query(StoragePool).filter(
-        StoragePool.report_date == report_date
+    # Use capacity_volumes table instead of storage_pools
+    from app.db.models import CapacityVolume
+    
+    volumes = db.query(CapacityVolume).filter(
+        CapacityVolume.report_date == report_date
     ).all()
     
-    if not pools:
+    if not volumes:
         return {'simple_average': [], 'weighted_average': []}
     
-    # Sort pools by capacity (largest first)
-    sorted_pools = sorted(pools, key=lambda p: p.usable_capacity_gib or 0, reverse=True)
+    # Sort volumes by capacity (largest first)
+    sorted_volumes = sorted(volumes, key=lambda v: v.provisioned_capacity_gib or 0, reverse=True)
     
     # Calculate total capacity and adaptive threshold
-    total_capacity = sum(p.usable_capacity_gib or 0 for p in pools)
-    total_used = sum(p.used_capacity_gib or 0 for p in pools)
-    total_available = sum(p.available_capacity_gib or 0 for p in pools)
+    total_capacity = sum(v.provisioned_capacity_gib or 0 for v in volumes)
+    total_used = sum(v.used_capacity_gib or 0 for v in volumes)
+    total_available = sum(v.available_capacity_gib or 0 for v in volumes)
     
-    # Adaptive threshold based on pool count
-    if len(pools) > 50:
-        threshold_pct = 0.02  # 2% for many pools
-    elif len(pools) > 30:
-        threshold_pct = 0.01  # 1% for moderate pools
+    # Adaptive threshold based on volume count (for aggregating small volumes)
+    if len(volumes) > 200:
+        threshold_pct = 0.02  # 2% for many volumes
+    elif len(volumes) > 100:
+        threshold_pct = 0.01  # 1% for moderate volumes
     else:
-        threshold_pct = 0.005  # 0.5% for few pools
+        threshold_pct = 0.005  # 0.5% for few volumes
     
     min_capacity_threshold = total_capacity * threshold_pct
+    
+    # ============================================================================
+    # Build hierarchical structure: System → Pool → Volume
+    # ============================================================================
+    
+    # Group volumes by system and pool
+    system_pool_volumes = {}
+    for volume in volumes:
+        sys_name = volume.storage_system_name or 'Unknown System'
+        pool_name = volume.pool_name or 'Unknown Pool'
+        
+        if sys_name not in system_pool_volumes:
+            system_pool_volumes[sys_name] = {}
+        
+        if pool_name not in system_pool_volumes[sys_name]:
+            system_pool_volumes[sys_name][pool_name] = []
+        
+        system_pool_volumes[sys_name][pool_name].append(volume)
     
     # ============================================================================
     # SIMPLE AVERAGE TREEMAP (Method 1)
     # ============================================================================
     simple_result = []
-    simple_small_pools = {}
     
-    # Root node - simple average
-    total_util_sum = sum(p.utilization_pct or 0 for p in pools)
-    avg_total_util = total_util_sum / len(pools) if pools else 0
+    # Root node - simple average (average of all volume utilizations)
+    total_util_sum = 0
+    volume_count = 0
+    for volume in volumes:
+        prov_cap = volume.provisioned_capacity_gib or 0
+        used_cap = volume.used_capacity_gib or 0
+        if prov_cap > 0:
+            vol_util = (used_cap / prov_cap) * 100
+            total_util_sum += vol_util
+            volume_count += 1
+    
+    avg_total_util = total_util_sum / volume_count if volume_count > 0 else 0
     
     simple_result.append({
         'name': 'All Storage',
@@ -909,94 +940,126 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
         'utilization_pct': round(avg_total_util, 1)
     })
     
-    # Calculate per-system metrics for simple average
-    system_capacities = {}
-    system_used = {}
-    system_available = {}
-    system_utilizations = {}
-    system_pool_counts = {}
-    
-    for pool in pools:
-        sys_name = pool.storage_system_name
-        if sys_name not in system_capacities:
-            system_capacities[sys_name] = 0
-            system_used[sys_name] = 0
-            system_available[sys_name] = 0
-            system_utilizations[sys_name] = 0
-            system_pool_counts[sys_name] = 0
+    # Add system nodes and pool nodes - simple average
+    for sys_name, pools in system_pool_volumes.items():
+        # Calculate system-level aggregates
+        sys_total = 0
+        sys_used = 0
+        sys_available = 0
+        sys_util_sum = 0
+        sys_volume_count = 0
         
-        system_capacities[sys_name] += (pool.usable_capacity_gib or 0)
-        system_used[sys_name] += (pool.used_capacity_gib or 0)
-        system_available[sys_name] += (pool.available_capacity_gib or 0)
-        system_utilizations[sys_name] += (pool.utilization_pct or 0)
-        system_pool_counts[sys_name] += 1
-    
-    # Add system nodes - simple average
-    systems_added = {}
-    for pool in pools:
-        if pool.storage_system_name not in systems_added:
-            systems_added[pool.storage_system_name] = True
-            sys_name = pool.storage_system_name
-            avg_util = system_utilizations[sys_name] / system_pool_counts[sys_name]
+        for pool_name, pool_volumes in pools.items():
+            for vol in pool_volumes:
+                prov_cap = vol.provisioned_capacity_gib or 0
+                used_cap = vol.used_capacity_gib or 0
+                avail_cap = vol.available_capacity_gib or 0
+                
+                sys_total += prov_cap
+                sys_used += used_cap
+                sys_available += avail_cap
+                
+                if prov_cap > 0:
+                    vol_util = (used_cap / prov_cap) * 100
+                    sys_util_sum += vol_util
+                    sys_volume_count += 1
+        
+        sys_avg_util = sys_util_sum / sys_volume_count if sys_volume_count > 0 else 0
+        
+        # Add system node
+        simple_result.append({
+            'name': sys_name,
+            'storage_system': 'All Storage',
+            'total_capacity_gib': sys_total,
+            'used_capacity_gib': sys_used,
+            'available_capacity_gib': sys_available,
+            'utilization_pct': round(sys_avg_util, 1)
+        })
+        
+        # Add pool nodes
+        for pool_name, pool_volumes in pools.items():
+            pool_total = 0
+            pool_used = 0
+            pool_available = 0
+            pool_util_sum = 0
+            pool_volume_count = 0
             
+            for vol in pool_volumes:
+                prov_cap = vol.provisioned_capacity_gib or 0
+                used_cap = vol.used_capacity_gib or 0
+                avail_cap = vol.available_capacity_gib or 0
+                
+                pool_total += prov_cap
+                pool_used += used_cap
+                pool_available += avail_cap
+                
+                if prov_cap > 0:
+                    vol_util = (used_cap / prov_cap) * 100
+                    pool_util_sum += vol_util
+                    pool_volume_count += 1
+            
+            pool_avg_util = pool_util_sum / pool_volume_count if pool_volume_count > 0 else 0
+            
+            # Add pool node
             simple_result.append({
-                'name': sys_name,
-                'storage_system': 'All Storage',
-                'total_capacity_gib': system_capacities[sys_name],
-                'used_capacity_gib': system_used[sys_name],
-                'available_capacity_gib': system_available[sys_name],
-                'utilization_pct': round(avg_util, 1)
+                'name': pool_name,
+                'storage_system': sys_name,
+                'total_capacity_gib': pool_total,
+                'used_capacity_gib': pool_used,
+                'available_capacity_gib': pool_available,
+                'utilization_pct': round(pool_avg_util, 1)
             })
             
-            simple_small_pools[sys_name] = {
+            # Add volume nodes (with aggregation of small volumes)
+            sorted_pool_volumes = sorted(pool_volumes, key=lambda v: v.provisioned_capacity_gib or 0, reverse=True)
+            small_volumes_data = {
                 'capacity': 0,
                 'used': 0,
                 'available': 0,
                 'count': 0,
-                'total_util': 0
+                'util_sum': 0
             }
-    
-    # Add pool nodes - simple average
-    for pool in sorted_pools:
-        pool_capacity = pool.usable_capacity_gib or 0
-        pool_used = pool.used_capacity_gib or 0
-        pool_available = pool.available_capacity_gib or 0
-        
-        if pool_capacity >= min_capacity_threshold:
-            simple_result.append({
-                'name': pool.name,
-                'storage_system': pool.storage_system_name,
-                'total_capacity_gib': pool_capacity,
-                'used_capacity_gib': pool_used,
-                'available_capacity_gib': pool_available,
-                'utilization_pct': pool.utilization_pct or 0
-            })
-        else:
-            # Aggregate small pools
-            simple_small_pools[pool.storage_system_name]['capacity'] += pool_capacity
-            simple_small_pools[pool.storage_system_name]['used'] += pool_used
-            simple_small_pools[pool.storage_system_name]['available'] += pool_available
-            simple_small_pools[pool.storage_system_name]['count'] += 1
-            simple_small_pools[pool.storage_system_name]['total_util'] += (pool.utilization_pct or 0)
-    
-    # Add aggregated small pools - simple average
-    for system_name, small_data in simple_small_pools.items():
-        if small_data['count'] > 0:
-            avg_util = small_data['total_util'] / small_data['count']
-            simple_result.append({
-                'name': f"Other Pools ({small_data['count']})",
-                'storage_system': system_name,
-                'total_capacity_gib': small_data['capacity'],
-                'used_capacity_gib': small_data['used'],
-                'available_capacity_gib': small_data['available'],
-                'utilization_pct': round(avg_util, 1)
-            })
+            
+            for vol in sorted_pool_volumes:
+                prov_cap = vol.provisioned_capacity_gib or 0
+                used_cap = vol.used_capacity_gib or 0
+                avail_cap = vol.available_capacity_gib or 0
+                vol_util = (used_cap / prov_cap * 100) if prov_cap > 0 else 0
+                
+                if prov_cap >= min_capacity_threshold:
+                    # Large volume - add individual node
+                    simple_result.append({
+                        'name': vol.volume_name or 'Unnamed Volume',
+                        'storage_system': pool_name,
+                        'total_capacity_gib': prov_cap,
+                        'used_capacity_gib': used_cap,
+                        'available_capacity_gib': avail_cap,
+                        'utilization_pct': round(vol_util, 1)
+                    })
+                else:
+                    # Small volume - aggregate
+                    small_volumes_data['capacity'] += prov_cap
+                    small_volumes_data['used'] += used_cap
+                    small_volumes_data['available'] += avail_cap
+                    small_volumes_data['count'] += 1
+                    small_volumes_data['util_sum'] += vol_util
+            
+            # Add aggregated small volumes node
+            if small_volumes_data['count'] > 0:
+                avg_small_util = small_volumes_data['util_sum'] / small_volumes_data['count']
+                simple_result.append({
+                    'name': f"Other Volumes ({small_volumes_data['count']})",
+                    'storage_system': pool_name,
+                    'total_capacity_gib': small_volumes_data['capacity'],
+                    'used_capacity_gib': small_volumes_data['used'],
+                    'available_capacity_gib': small_volumes_data['available'],
+                    'utilization_pct': round(avg_small_util, 1)
+                })
     
     # ============================================================================
     # WEIGHTED AVERAGE TREEMAP (Method 2)
     # ============================================================================
     weighted_result = []
-    weighted_small_pools = {}
     
     # Root node - weighted average
     weighted_total_util = (total_used / total_capacity * 100) if total_capacity > 0 else 0
@@ -1010,67 +1073,97 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
         'utilization_pct': round(weighted_total_util, 1)
     })
     
-    # Add system nodes - weighted average
-    systems_added_weighted = {}
-    for pool in pools:
-        if pool.storage_system_name not in systems_added_weighted:
-            systems_added_weighted[pool.storage_system_name] = True
-            sys_name = pool.storage_system_name
+    # Add system nodes and pool nodes - weighted average
+    for sys_name, pools in system_pool_volumes.items():
+        # Calculate system-level aggregates
+        sys_total = 0
+        sys_used = 0
+        sys_available = 0
+        
+        for pool_name, pool_volumes in pools.items():
+            for vol in pool_volumes:
+                sys_total += (vol.provisioned_capacity_gib or 0)
+                sys_used += (vol.used_capacity_gib or 0)
+                sys_available += (vol.available_capacity_gib or 0)
+        
+        sys_weighted_util = (sys_used / sys_total * 100) if sys_total > 0 else 0
+        
+        # Add system node
+        weighted_result.append({
+            'name': sys_name,
+            'storage_system': 'All Storage',
+            'total_capacity_gib': sys_total,
+            'used_capacity_gib': sys_used,
+            'available_capacity_gib': sys_available,
+            'utilization_pct': round(sys_weighted_util, 1)
+        })
+        
+        # Add pool nodes
+        for pool_name, pool_volumes in pools.items():
+            pool_total = 0
+            pool_used = 0
+            pool_available = 0
             
-            sys_total = system_capacities[sys_name]
-            sys_used_cap = system_used[sys_name]
-            weighted_sys_util = (sys_used_cap / sys_total * 100) if sys_total > 0 else 0
+            for vol in pool_volumes:
+                pool_total += (vol.provisioned_capacity_gib or 0)
+                pool_used += (vol.used_capacity_gib or 0)
+                pool_available += (vol.available_capacity_gib or 0)
             
+            pool_weighted_util = (pool_used / pool_total * 100) if pool_total > 0 else 0
+            
+            # Add pool node
             weighted_result.append({
-                'name': sys_name,
-                'storage_system': 'All Storage',
-                'total_capacity_gib': sys_total,
-                'used_capacity_gib': sys_used_cap,
-                'available_capacity_gib': system_available[sys_name],
-                'utilization_pct': round(weighted_sys_util, 1)
+                'name': pool_name,
+                'storage_system': sys_name,
+                'total_capacity_gib': pool_total,
+                'used_capacity_gib': pool_used,
+                'available_capacity_gib': pool_available,
+                'utilization_pct': round(pool_weighted_util, 1)
             })
             
-            weighted_small_pools[sys_name] = {
+            # Add volume nodes (with aggregation of small volumes)
+            sorted_pool_volumes = sorted(pool_volumes, key=lambda v: v.provisioned_capacity_gib or 0, reverse=True)
+            small_volumes_data = {
                 'capacity': 0,
                 'used': 0,
                 'available': 0,
                 'count': 0
             }
-    
-    # Add pool nodes - weighted average
-    for pool in sorted_pools:
-        pool_capacity = pool.usable_capacity_gib or 0
-        pool_used = pool.used_capacity_gib or 0
-        pool_available = pool.available_capacity_gib or 0
-        
-        if pool_capacity >= min_capacity_threshold:
-            weighted_result.append({
-                'name': pool.name,
-                'storage_system': pool.storage_system_name,
-                'total_capacity_gib': pool_capacity,
-                'used_capacity_gib': pool_used,
-                'available_capacity_gib': pool_available,
-                'utilization_pct': pool.utilization_pct or 0
-            })
-        else:
-            # Aggregate small pools
-            weighted_small_pools[pool.storage_system_name]['capacity'] += pool_capacity
-            weighted_small_pools[pool.storage_system_name]['used'] += pool_used
-            weighted_small_pools[pool.storage_system_name]['available'] += pool_available
-            weighted_small_pools[pool.storage_system_name]['count'] += 1
-    
-    # Add aggregated small pools - weighted average
-    for system_name, small_data in weighted_small_pools.items():
-        if small_data['count'] > 0:
-            weighted_small_util = (small_data['used'] / small_data['capacity'] * 100) if small_data['capacity'] > 0 else 0
-            weighted_result.append({
-                'name': f"Other Pools ({small_data['count']})",
-                'storage_system': system_name,
-                'total_capacity_gib': small_data['capacity'],
-                'used_capacity_gib': small_data['used'],
-                'available_capacity_gib': small_data['available'],
-                'utilization_pct': round(weighted_small_util, 1)
-            })
+            
+            for vol in sorted_pool_volumes:
+                prov_cap = vol.provisioned_capacity_gib or 0
+                used_cap = vol.used_capacity_gib or 0
+                avail_cap = vol.available_capacity_gib or 0
+                vol_util = (used_cap / prov_cap * 100) if prov_cap > 0 else 0
+                
+                if prov_cap >= min_capacity_threshold:
+                    # Large volume - add individual node
+                    weighted_result.append({
+                        'name': vol.volume_name or 'Unnamed Volume',
+                        'storage_system': pool_name,
+                        'total_capacity_gib': prov_cap,
+                        'used_capacity_gib': used_cap,
+                        'available_capacity_gib': avail_cap,
+                        'utilization_pct': round(vol_util, 1)
+                    })
+                else:
+                    # Small volume - aggregate
+                    small_volumes_data['capacity'] += prov_cap
+                    small_volumes_data['used'] += used_cap
+                    small_volumes_data['available'] += avail_cap
+                    small_volumes_data['count'] += 1
+            
+            # Add aggregated small volumes node (weighted average)
+            if small_volumes_data['count'] > 0:
+                weighted_small_util = (small_volumes_data['used'] / small_volumes_data['capacity'] * 100) if small_volumes_data['capacity'] > 0 else 0
+                weighted_result.append({
+                    'name': f"Other Volumes ({small_volumes_data['count']})",
+                    'storage_system': pool_name,
+                    'total_capacity_gib': small_volumes_data['capacity'],
+                    'used_capacity_gib': small_volumes_data['used'],
+                    'available_capacity_gib': small_volumes_data['available'],
+                    'utilization_pct': round(weighted_small_util, 1)
+                })
     
     return {
         'simple_average': simple_result,
