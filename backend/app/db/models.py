@@ -353,6 +353,7 @@ class CapacityVolume(Base):
     real_capacity_gib: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     written_capacity_gib: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     reserved_volume_capacity_gib: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    overhead_used_capacity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     
     # Utilization
     used_capacity_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)

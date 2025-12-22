@@ -181,8 +181,9 @@ async def upload_excel(
 
             # Special handling for capacity volumes - calculate available capacity for FlashSystems
             if sheet_name == 'Capacity_Volumes':
-                from app.utils.processing import calculate_flashsystem_available_capacity
+                from app.utils.processing import calculate_flashsystem_available_capacity, calculate_overhead_used_capacity
                 df = calculate_flashsystem_available_capacity(df)
+                df = calculate_overhead_used_capacity(df)
 
             # Convert to records
             records = df.to_dict('records')

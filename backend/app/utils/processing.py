@@ -462,6 +462,45 @@ def calculate_flashsystem_available_capacity(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def calculate_overhead_used_capacity(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Calculate overhead_used_capacity for volumes (excluding FlashSystems).
+    
+    For non-FlashSystem storage systems, calculate the overhead using the formula:
+    overhead_used_capacity = provisioned_capacity_gib - used_capacity_gib - available_capacity_gib
+    
+    This calculation is NOT applied to FlashSystem storage systems (A9K-A1, A9KR-R1, A9KR-R2).
+    
+    The overhead represents the difference between provisioned capacity and the sum of 
+    used and available capacity, which can indicate system overhead, metadata, or other 
+    storage management overhead.
+    """
+    FLASHSYSTEM_NAMES = ['A9K-A1', 'A9KR-R1', 'A9KR-R2']
+    
+    if 'storage_system_name' not in df.columns:
+        return df
+    
+    required_columns = ['provisioned_capacity_gib', 'used_capacity_gib', 'available_capacity_gib']
+    if not all(col in df.columns for col in required_columns):
+        return df
+    
+    # Create a mask for NON-FlashSystem volumes
+    non_flashsystem_mask = ~df['storage_system_name'].isin(FLASHSYSTEM_NAMES)
+    
+    # Calculate overhead_used_capacity for non-FlashSystem volumes
+    df.loc[non_flashsystem_mask, 'overhead_used_capacity'] = df.loc[non_flashsystem_mask].apply(
+        lambda row: (row.get('provisioned_capacity_gib') or 0) - 
+                    (row.get('used_capacity_gib') or 0) - 
+                    (row.get('available_capacity_gib') or 0),
+        axis=1
+    )
+    
+    # For FlashSystem volumes, set overhead_used_capacity to None/0
+    df.loc[~non_flashsystem_mask, 'overhead_used_capacity'] = 0.0
+    
+    return df
+
+
 def parse_hosts_to_mapping(
     volumes_df: pd.DataFrame,
     report_date: date
