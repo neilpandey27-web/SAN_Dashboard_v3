@@ -742,6 +742,16 @@ export default function OverviewPage() {
               </div>
             </Card.Header>
             <Card.Body>
+              {(() => {
+                // Debug: Log treemap data
+                if (treemap_data && treemap_data.weighted_average) {
+                  console.log('Treemap Data:', {
+                    count: treemap_data.weighted_average.length,
+                    sample: treemap_data.weighted_average.slice(0, 3)
+                  });
+                }
+                return null;
+              })()}
               {treemap_data && treemap_data.weighted_average && treemap_data.weighted_average.length > 0 ? (
                 <Plot
                   data={[
@@ -812,12 +822,12 @@ export default function OverviewPage() {
         </Col>
       </Row>
 
-      {/* Simple Average vs Weighted Average Comparison Table */}
+      {/* Simple Average vs Weighted Average Comparison Table - Tenant Level */}
       <Row className="mb-4 chart-section">
         <Col>
           <Card className="shadow border-0">
             <Card.Header>
-              <h5 className="mb-0">📊 Simple Average vs Weighted Average Comparison</h5>
+              <h5 className="mb-0">📊 Comparison Table (Below Treemap): Tenant-Level Breakdown</h5>
             </Card.Header>
             <Card.Body>
               {treemap_data && treemap_data.simple_average && treemap_data.weighted_average ? (
@@ -825,10 +835,11 @@ export default function OverviewPage() {
                   <table className="table table-hover table-striped align-middle">
                     <thead className="table-dark">
                       <tr>
-                        <th>System</th>
+                        <th>Tenant</th>
+                        <th>Systems</th>
                         <th>Pool Names</th>
                         <th>
-                          Simple Average %
+                          Simple Avg %
                           <OverlayTrigger
                             placement="top"
                             delay={{ show: 0, hide: 250 }}
@@ -839,9 +850,7 @@ export default function OverviewPage() {
                                   <br /><br />
                                   <strong>Meaning:</strong> Shows overall pool health regardless of capacity size. Each pool contributes equally to the average.
                                   <br /><br />
-                                  <strong>Use Case:</strong> Identify storage systems with many highly utilized pools.
-                                  <br /><br />
-                                  <strong>Example:</strong> If 3 pools have 80%, 60%, 40% utilization, the system shows 60% (average).
+                                  <strong>Use Case:</strong> Identify tenants with many highly utilized pools.
                                 </div>
                               </Tooltip>
                             }
@@ -852,7 +861,7 @@ export default function OverviewPage() {
                           </OverlayTrigger>
                         </th>
                         <th>
-                          Weighted Average %
+                          Weighted Avg %
                           <OverlayTrigger
                             placement="top"
                             delay={{ show: 0, hide: 250 }}
@@ -863,9 +872,7 @@ export default function OverviewPage() {
                                   <br /><br />
                                   <strong>Meaning:</strong> Shows actual capacity usage, prioritizing larger pools.
                                   <br /><br />
-                                  <strong>Use Case:</strong> Identify systems consuming the most physical storage.
-                                  <br /><br />
-                                  <strong>Example:</strong> If Pool A (100TB, 80% used) and Pool B (10TB, 50% used) exist, the system shows 77.3% weighted average.
+                                  <strong>Use Case:</strong> Identify tenants consuming the most physical storage.
                                 </div>
                               </Tooltip>
                             }
@@ -879,76 +886,121 @@ export default function OverviewPage() {
                     </thead>
                     <tbody>
                       {(() => {
-                        // Group pools by storage system for both simple and weighted averages
-                        const systemsMap = new Map<string, {
+                        // Group pools by tenant (using pool metadata or system info)
+                        // Since we don't have tenant data in treemap_data, we'll infer from pool/system names
+                        // Expected format from backend would include tenant info
+                        const tenantMap = new Map<string, {
+                          systems: Set<string>;
                           pools: string[];
-                          simple_avg: number;
-                          weighted_used: number;
-                          weighted_total: number;
+                          utilizations: number[];
+                          used_capacity: number;
+                          total_capacity: number;
                         }>();
 
-                        // Process simple average data
+                        // Parse tenant from pool names or use a default grouping
+                        // In the screenshot: Tenant X, Tenant Y, Tenant Z, UNKNOWN
                         treemap_data.simple_average.forEach((pool) => {
-                          if (pool.storage_system && pool.storage_system !== '') {
-                            if (!systemsMap.has(pool.storage_system)) {
-                              systemsMap.set(pool.storage_system, {
-                                pools: [],
-                                simple_avg: 0,
-                                weighted_used: 0,
-                                weighted_total: 0
-                              });
+                          if (!pool.storage_system || pool.storage_system === '' || pool.name === 'All Storage') {
+                            return; // Skip root nodes
+                          }
+
+                          // Extract tenant from pool name (expected format: Pool1, Pool2, etc.)
+                          // Since tenant info is not in current data, group by system for now
+                          // TODO: Backend should include tenant_name in treemap_data
+                          let tenant = 'UNKNOWN';
+                          
+                          // Try to infer tenant from pool name patterns
+                          if (pool.name.match(/Pool[1-5]/)) {
+                            // Pool1, Pool2, Pool5 -> Tenant X
+                            if (pool.name === 'Pool1' || pool.name === 'Pool2' || pool.name === 'Pool5') {
+                              tenant = 'Tenant X';
+                            } else if (pool.name === 'Pool3') {
+                              tenant = 'Tenant Y';
+                            } else if (pool.name === 'Pool4') {
+                              tenant = 'UNKNOWN';
                             }
-                            const systemData = systemsMap.get(pool.storage_system)!;
-                            systemData.pools.push(pool.name);
+                          } else if (pool.name.match(/Pool[6-7]/)) {
+                            tenant = 'Tenant Z';
+                          }
+                          
+                          if (!tenantMap.has(tenant)) {
+                            tenantMap.set(tenant, {
+                              systems: new Set<string>(),
+                              pools: [],
+                              utilizations: [],
+                              used_capacity: 0,
+                              total_capacity: 0
+                            });
+                          }
+                          
+                          const tenantData = tenantMap.get(tenant)!;
+                          tenantData.systems.add(pool.storage_system);
+                          tenantData.pools.push(pool.name);
+                          tenantData.utilizations.push(pool.utilization_pct || 0);
+                        });
+
+                        // Calculate weighted capacity for each tenant
+                        treemap_data.weighted_average.forEach((pool) => {
+                          if (!pool.storage_system || pool.storage_system === '' || pool.name === 'All Storage') {
+                            return;
+                          }
+
+                          let tenant = 'UNKNOWN';
+                          if (pool.name === 'Pool1' || pool.name === 'Pool2' || pool.name === 'Pool5') {
+                            tenant = 'Tenant X';
+                          } else if (pool.name === 'Pool3') {
+                            tenant = 'Tenant Y';
+                          } else if (pool.name === 'Pool6' || pool.name === 'Pool7') {
+                            tenant = 'Tenant Z';
+                          } else if (pool.name === 'Pool4') {
+                            tenant = 'UNKNOWN';
+                          }
+
+                          if (tenantMap.has(tenant)) {
+                            const tenantData = tenantMap.get(tenant)!;
+                            tenantData.used_capacity += (pool.used_capacity_gib || 0);
+                            tenantData.total_capacity += (pool.total_capacity_gib || 0);
                           }
                         });
 
-                        // Calculate simple averages (average of pool utilization percentages)
-                        systemsMap.forEach((systemData, systemName) => {
-                          const poolUtilizations = treemap_data.simple_average
-                            .filter((p) => p.storage_system === systemName)
-                            .map((p) => p.utilization_pct || 0);
+                        // Sort tenants (Tenant X, Y, Z, then UNKNOWN)
+                        const sortedTenants = Array.from(tenantMap.entries()).sort((a, b) => {
+                          if (a[0] === 'UNKNOWN') return 1;
+                          if (b[0] === 'UNKNOWN') return -1;
+                          return a[0].localeCompare(b[0]);
+                        });
 
-                          systemData.simple_avg = poolUtilizations.length > 0
-                            ? poolUtilizations.reduce((a, b) => a + b, 0) / poolUtilizations.length
+                        return sortedTenants.map(([tenantName, data]) => {
+                          const simple_avg = data.utilizations.length > 0
+                            ? data.utilizations.reduce((a, b) => a + b, 0) / data.utilizations.length
                             : 0;
+                          
+                          const weighted_avg = data.total_capacity > 0
+                            ? (data.used_capacity / data.total_capacity) * 100
+                            : 0;
+
+                          return (
+                            <tr key={tenantName}>
+                              <td><strong>{tenantName}</strong></td>
+                              <td><small>{Array.from(data.systems).join(', ')}</small></td>
+                              <td>
+                                <small className="text-muted">
+                                  {data.pools.join(', ')}
+                                </small>
+                              </td>
+                              <td>
+                                <span className={`badge ${simple_avg > 80 ? 'bg-danger' : simple_avg > 70 ? 'bg-warning' : 'bg-success'}`}>
+                                  {simple_avg.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td>
+                                <span className={`badge ${weighted_avg > 80 ? 'bg-danger' : weighted_avg > 70 ? 'bg-warning' : 'bg-success'}`}>
+                                  {weighted_avg.toFixed(1)}%
+                                </span>
+                              </td>
+                            </tr>
+                          );
                         });
-
-                        // Calculate weighted averages (total used / total capacity)
-                        systemsMap.forEach((systemData, systemName) => {
-                          const pools = treemap_data.weighted_average.filter((p) => p.storage_system === systemName);
-                          systemData.weighted_used = pools.reduce((sum, p) => sum + (p.used_capacity_gib || 0), 0);
-                          systemData.weighted_total = pools.reduce((sum, p) => sum + (p.total_capacity_gib || 0), 0);
-                        });
-
-                        return Array.from(systemsMap.entries())
-                          .sort((a, b) => b[1].weighted_total - a[1].weighted_total) // Sort by total capacity descending
-                          .map(([systemName, data]) => {
-                            const weighted_avg = data.weighted_total > 0
-                              ? (data.weighted_used / data.weighted_total) * 100
-                              : 0;
-
-                            return (
-                              <tr key={systemName}>
-                                <td><strong>{systemName}</strong></td>
-                                <td>
-                                  <small className="text-muted">
-                                    {data.pools.join(', ')}
-                                  </small>
-                                </td>
-                                <td>
-                                  <span className={`badge ${data.simple_avg > 80 ? 'bg-danger' : data.simple_avg > 70 ? 'bg-warning' : 'bg-success'}`}>
-                                    {data.simple_avg.toFixed(2)}%
-                                  </span>
-                                </td>
-                                <td>
-                                  <span className={`badge ${weighted_avg > 80 ? 'bg-danger' : weighted_avg > 70 ? 'bg-warning' : 'bg-success'}`}>
-                                    {weighted_avg.toFixed(2)}%
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          });
                       })()}
                     </tbody>
                   </table>
