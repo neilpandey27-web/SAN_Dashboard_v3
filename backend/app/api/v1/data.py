@@ -528,7 +528,10 @@ async def get_overview_data(
     """
     # Get latest report date if not specified
     if not report_date:
-        latest = db.query(func.max(StorageSystem.report_date)).scalar()
+        # Check capacity_volumes first (primary data source), then storage_systems
+        latest = db.query(func.max(CapacityVolume.report_date)).scalar()
+        if not latest:
+            latest = db.query(func.max(StorageSystem.report_date)).scalar()
         if not latest:
             return {
                 "kpis": None,

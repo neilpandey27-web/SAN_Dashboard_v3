@@ -722,41 +722,102 @@ def generate_alerts_from_pools(db: Session, report_date: date) -> List[Alert]:
 def get_overview_kpis(db: Session, report_date: date, tenant_ids: Optional[List[int]] = None) -> Dict:
     """
     Calculate KPI metrics for the overview dashboard.
+    Uses capacity_volumes as primary data source, falls back to storage_systems if needed.
     """
-    # Get latest systems
-    systems = db.query(StorageSystem).filter(
-        StorageSystem.report_date == report_date
-    ).all()
+    # Try capacity_volumes first (primary data source)
+    volumes_query = db.query(CapacityVolume).filter(
+        CapacityVolume.report_date == report_date
+    )
     
-    total_capacity = sum(s.usable_capacity_gib or 0 for s in systems)
-    available_capacity = sum(s.available_capacity_gib or 0 for s in systems)
-    used_capacity = total_capacity - available_capacity
+    # Apply tenant filtering if needed
+    if tenant_ids:
+        from app.db.models import TenantPoolMapping
+        # Get pool names for these tenants
+        pool_names = db.query(TenantPoolMapping.pool_name).filter(
+            TenantPoolMapping.tenant_id.in_(tenant_ids)
+        ).distinct().all()
+        pool_names = [p[0] for p in pool_names]
+        if pool_names:
+            volumes_query = volumes_query.filter(CapacityVolume.pool_name.in_(pool_names))
+    
+    volumes = volumes_query.all()
+    
+    if volumes:
+        # Calculate from capacity_volumes
+        # Use provisioned_capacity_gib or capacity_gib
+        total_capacity = sum(
+            (v.provisioned_capacity_gib or v.capacity_gib or 0) for v in volumes
+        )
+        used_capacity = sum(v.used_capacity_gib or 0 for v in volumes)
+        available_capacity = total_capacity - used_capacity
+        
+        # Get unique counts
+        unique_systems = len(set(v.storage_system for v in volumes if v.storage_system))
+        unique_pools = len(set(v.pool_name for v in volumes if v.pool_name))
+        total_volumes = len(volumes)
+        
+        # Get hosts count
+        hosts_count = db.query(func.count(func.distinct(CapacityHost.id))).filter(
+            CapacityHost.report_date == report_date
+        ).scalar() or 0
+        
+        # Compression/deduplication data (if available in volumes)
+        compression_ratios = [v.compression_ratio for v in volumes if hasattr(v, 'compression_ratio') and v.compression_ratio]
+        avg_compression = sum(compression_ratios) / len(compression_ratios) if compression_ratios else 1.0
+        
+        data_reduction = 0  # Calculate from volumes if available
+        
+    else:
+        # Fall back to storage_systems table (legacy)
+        systems = db.query(StorageSystem).filter(
+            StorageSystem.report_date == report_date
+        ).all()
+        
+        if not systems:
+            # No data at all
+            return {
+                'total_capacity_tb': 0,
+                'used_capacity_tb': 0,
+                'available_capacity_tb': 0,
+                'utilization_pct': 0,
+                'total_systems': 0,
+                'total_pools': 0,
+                'total_volumes': 0,
+                'total_hosts': 0,
+                'compression_ratio': 1.0,
+                'data_reduction_tb': 0
+            }
+        
+        total_capacity = sum(s.usable_capacity_gib or 0 for s in systems)
+        available_capacity = sum(s.available_capacity_gib or 0 for s in systems)
+        used_capacity = total_capacity - available_capacity
+        
+        # Get compression ratio average
+        compression_ratios = [s.total_compression_ratio for s in systems if s.total_compression_ratio]
+        avg_compression = sum(compression_ratios) / len(compression_ratios) if compression_ratios else 1.0
+        
+        # Get data reduction
+        data_reduction = sum(s.data_reduction_gib or 0 for s in systems)
+        
+        # Get counts
+        unique_systems = len(systems)
+        unique_pools = sum(s.pools or 0 for s in systems)
+        total_volumes = sum(s.volumes or 0 for s in systems)
+        
+        # Get hosts count
+        hosts_count = db.query(func.count(CapacityHost.id)).filter(
+            CapacityHost.report_date == report_date
+        ).scalar() or 0
     
     utilization = calculate_utilization_pct(used_capacity, total_capacity)
-    
-    # Get compression ratio average
-    compression_ratios = [s.total_compression_ratio for s in systems if s.total_compression_ratio]
-    avg_compression = sum(compression_ratios) / len(compression_ratios) if compression_ratios else 1.0
-    
-    # Get data reduction
-    data_reduction = sum(s.data_reduction_gib or 0 for s in systems)
-    
-    # Get counts
-    total_pools = sum(s.pools or 0 for s in systems)
-    total_volumes = sum(s.volumes or 0 for s in systems)
-    
-    # Get hosts count
-    hosts_count = db.query(func.count(CapacityHost.id)).filter(
-        CapacityHost.report_date == report_date
-    ).scalar() or 0
     
     return {
         'total_capacity_tb': gib_to_tb(total_capacity),
         'used_capacity_tb': gib_to_tb(used_capacity),
         'available_capacity_tb': gib_to_tb(available_capacity),
         'utilization_pct': utilization,
-        'total_systems': len(systems),
-        'total_pools': total_pools,
+        'total_systems': unique_systems,
+        'total_pools': unique_pools,
         'total_volumes': total_volumes,
         'total_hosts': hosts_count,
         'compression_ratio': round(avg_compression, 2),
@@ -769,36 +830,148 @@ def get_top_systems_by_usage(
     report_date: date,
     limit: int = 10
 ) -> List[Dict]:
-    """Get top storage systems by capacity usage."""
-    systems = db.query(StorageSystem).filter(
-        StorageSystem.report_date == report_date
+    """
+    Get top storage systems by capacity usage.
+    Uses capacity_volumes as primary data source.
+    """
+    # Try capacity_volumes first
+    volumes = db.query(CapacityVolume).filter(
+        CapacityVolume.report_date == report_date
     ).all()
     
-    system_data = []
-    for s in systems:
-        total = s.usable_capacity_gib or 0
-        available = s.available_capacity_gib or 0
-        used = total - available
+    if volumes:
+        # Aggregate by storage system
+        system_data = {}
+        for v in volumes:
+            sys_name = v.storage_system
+            if not sys_name:
+                continue
+            
+            if sys_name not in system_data:
+                system_data[sys_name] = {
+                    'name': sys_name,
+                    'total_gib': 0,
+                    'used_gib': 0
+                }
+            
+            # Use provisioned_capacity_gib or capacity_gib
+            capacity = v.provisioned_capacity_gib or v.capacity_gib or 0
+            used = v.used_capacity_gib or 0
+            
+            system_data[sys_name]['total_gib'] += capacity
+            system_data[sys_name]['used_gib'] += used
         
-        system_data.append({
-            'name': s.name,
-            'used_tb': gib_to_tb(used),
-            'available_tb': gib_to_tb(available),
-            'total_tb': gib_to_tb(total),
-            'utilization_pct': calculate_utilization_pct(used, total)
-        })
+        # Convert to list and calculate metrics
+        result = []
+        for sys_name, data in system_data.items():
+            total = data['total_gib']
+            used = data['used_gib']
+            available = total - used
+            
+            result.append({
+                'name': sys_name,
+                'used_tb': gib_to_tb(used),
+                'available_tb': gib_to_tb(available),
+                'total_tb': gib_to_tb(total),
+                'utilization_pct': calculate_utilization_pct(used, total)
+            })
+        
+        # Sort by used capacity descending
+        result.sort(key=lambda x: x['used_tb'], reverse=True)
+        return result[:limit]
     
-    # Sort by used capacity descending
-    system_data.sort(key=lambda x: x['used_tb'], reverse=True)
-    return system_data[:limit]
+    else:
+        # Fall back to storage_systems table
+        systems = db.query(StorageSystem).filter(
+            StorageSystem.report_date == report_date
+        ).all()
+        
+        system_data = []
+        for s in systems:
+            total = s.usable_capacity_gib or 0
+            available = s.available_capacity_gib or 0
+            used = total - available
+            
+            system_data.append({
+                'name': s.name,
+                'used_tb': gib_to_tb(used),
+                'available_tb': gib_to_tb(available),
+                'total_tb': gib_to_tb(total),
+                'utilization_pct': calculate_utilization_pct(used, total)
+            })
+        
+        # Sort by used capacity descending
+        system_data.sort(key=lambda x: x['used_tb'], reverse=True)
+        return system_data[:limit]
 
 
 def get_utilization_distribution(db: Session, report_date: date) -> List[Dict]:
-    """Get distribution of utilization across systems for histogram."""
-    # Get systems with utilization percentages
-    systems = db.query(StorageSystem).filter(
-        StorageSystem.report_date == report_date
+    """
+    Get distribution of utilization across systems for histogram.
+    Uses capacity_volumes as primary data source.
+    """
+    # Try capacity_volumes first
+    volumes = db.query(CapacityVolume).filter(
+        CapacityVolume.report_date == report_date
     ).all()
+    
+    if volumes:
+        # Aggregate by storage system
+        system_utils = {}
+        for v in volumes:
+            sys_name = v.storage_system
+            if not sys_name:
+                continue
+            
+            if sys_name not in system_utils:
+                system_utils[sys_name] = {'total': 0, 'used': 0}
+            
+            capacity = v.provisioned_capacity_gib or v.capacity_gib or 0
+            used = v.used_capacity_gib or 0
+            
+            system_utils[sys_name]['total'] += capacity
+            system_utils[sys_name]['used'] += used
+        
+        # Calculate utilization percentages
+        utilizations = []
+        for sys_name, data in system_utils.items():
+            if data['total'] > 0:
+                util_pct = (data['used'] / data['total']) * 100
+                utilizations.append(util_pct)
+    
+    else:
+        # Fall back to storage_systems
+        systems = db.query(StorageSystem).filter(
+            StorageSystem.report_date == report_date
+        ).all()
+        
+        utilizations = []
+        for s in systems:
+            total = s.usable_capacity_gib or 0
+            if total > 0:
+                available = s.available_capacity_gib or 0
+                used = total - available
+                util_pct = (used / total) * 100
+                utilizations.append(util_pct)
+    
+    if not utilizations:
+        return {'bins': [], 'counts': []}
+    
+    # Create histogram bins
+    bins = [0, 20, 40, 60, 80, 100]
+    bin_labels = ['0-20%', '20-40%', '40-60%', '60-80%', '80-100%']
+    counts = [0] * len(bin_labels)
+    
+    for util in utilizations:
+        for i, threshold in enumerate(bins[1:]):
+            if util <= threshold:
+                counts[i] += 1
+                break
+    
+    return {
+        'bins': bin_labels,
+        'counts': counts
+    }
     
     # Return raw utilization percentages for histogram
     # Frontend Plotly histogram will automatically create bins
@@ -815,41 +988,96 @@ def get_utilization_distribution(db: Session, report_date: date) -> List[Dict]:
 
 def get_forecasting_data(db: Session, report_date: date, limit: int = 10) -> List[Dict]:
     """Get pools with forecasting data for the combo chart."""
+    # Try storage_pools first (has forecasting data)
     pools = db.query(StoragePool).filter(
         StoragePool.report_date == report_date,
         StoragePool.utilization_pct.isnot(None)
     ).order_by(StoragePool.utilization_pct.desc()).limit(limit).all()
     
-    result = []
-    for pool in pools:
-        days = calculate_days_until_full(
-            pool.utilization_pct,
-            pool.recent_growth_gib,
-            pool.usable_capacity_gib
-        )
-        result.append({
-            'name': pool.name,
-            'utilization_pct': pool.utilization_pct,
-            'days_until_full': days,
-            'storage_system': pool.storage_system_name
-        })
+    if pools:
+        result = []
+        for pool in pools:
+            days = calculate_days_until_full(
+                pool.utilization_pct,
+                pool.recent_growth_gib,
+                pool.usable_capacity_gib
+            )
+            result.append({
+                'name': pool.name,
+                'utilization_pct': pool.utilization_pct,
+                'days_until_full': days,
+                'storage_system': pool.storage_system_name
+            })
+        return result
     
-    return result
+    # Fall back to capacity_volumes (aggregate by pool)
+    volumes = db.query(CapacityVolume).filter(
+        CapacityVolume.report_date == report_date
+    ).all()
+    
+    if not volumes:
+        return []
+    
+    # Aggregate by pool
+    pool_data = {}
+    for v in volumes:
+        pool_key = (v.pool_name, v.storage_system)
+        if pool_key not in pool_data:
+            pool_data[pool_key] = {'total': 0, 'used': 0}
+        
+        capacity = v.provisioned_capacity_gib or v.capacity_gib or 0
+        used = v.used_capacity_gib or 0
+        
+        pool_data[pool_key]['total'] += capacity
+        pool_data[pool_key]['used'] += used
+    
+    # Calculate utilization and create result
+    result = []
+    for (pool_name, system_name), data in pool_data.items():
+        if data['total'] > 0:
+            util_pct = (data['used'] / data['total']) * 100
+            result.append({
+                'name': pool_name,
+                'utilization_pct': round(util_pct, 2),
+                'days_until_full': None,  # No growth data available
+                'storage_system': system_name
+            })
+    
+    # Sort by utilization descending
+    result.sort(key=lambda x: x['utilization_pct'], reverse=True)
+    return result[:limit]
 
 
 def get_storage_types_distribution(db: Session, report_date: date) -> List[Dict]:
     """Get distribution of storage by type."""
+    # Try storage_systems first
     systems = db.query(StorageSystem).filter(
         StorageSystem.report_date == report_date
     ).all()
     
-    type_capacity = {}
-    for s in systems:
-        stype = s.type or 'Unknown'
-        capacity = gib_to_tb(s.usable_capacity_gib or 0)
-        type_capacity[stype] = type_capacity.get(stype, 0) + capacity
+    if systems:
+        type_capacity = {}
+        for s in systems:
+            stype = s.type or 'Unknown'
+            capacity = gib_to_tb(s.usable_capacity_gib or 0)
+            type_capacity[stype] = type_capacity.get(stype, 0) + capacity
+        
+        return [{'type': k, 'capacity_tb': round(v, 2)} for k, v in type_capacity.items()]
     
-    return [{'type': k, 'capacity_tb': round(v, 2)} for k, v in type_capacity.items()]
+    # Fall back to capacity_volumes (all volumes counted as "Unknown" type)
+    volumes = db.query(CapacityVolume).filter(
+        CapacityVolume.report_date == report_date
+    ).all()
+    
+    if not volumes:
+        return []
+    
+    # Aggregate all capacity (no type info in volumes table)
+    total_capacity_gib = sum(
+        (v.provisioned_capacity_gib or v.capacity_gib or 0) for v in volumes
+    )
+    
+    return [{'type': 'Storage', 'capacity_tb': round(gib_to_tb(total_capacity_gib), 2)}]
 
 def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     """
