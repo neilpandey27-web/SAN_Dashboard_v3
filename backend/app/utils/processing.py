@@ -738,7 +738,7 @@ def get_overview_kpis(db: Session, report_date: date, tenant_ids: Optional[List[
         ).distinct().all()
         pool_names = [p[0] for p in pool_names]
         if pool_names:
-            volumes_query = volumes_query.filter(CapacityVolume.pool_name.in_(pool_names))
+            volumes_query = volumes_query.filter(CapacityVolume.pool.in_(pool_names))
     
     volumes = volumes_query.all()
     
@@ -746,14 +746,14 @@ def get_overview_kpis(db: Session, report_date: date, tenant_ids: Optional[List[
         # Calculate from capacity_volumes
         # Use provisioned_capacity_gib or capacity_gib
         total_capacity = sum(
-            (v.provisioned_capacity_gib or v.capacity_gib or 0) for v in volumes
+            (v.provisioned_capacity_gib or 0) for v in volumes
         )
         used_capacity = sum(v.used_capacity_gib or 0 for v in volumes)
         available_capacity = total_capacity - used_capacity
         
         # Get unique counts
-        unique_systems = len(set(v.storage_system for v in volumes if v.storage_system))
-        unique_pools = len(set(v.pool_name for v in volumes if v.pool_name))
+        unique_systems = len(set(v.storage_system_name for v in volumes if v.storage_system_name))
+        unique_pools = len(set(v.pool for v in volumes if v.pool))
         total_volumes = len(volumes)
         
         # Get hosts count
@@ -843,7 +843,7 @@ def get_top_systems_by_usage(
         # Aggregate by storage system
         system_data = {}
         for v in volumes:
-            sys_name = v.storage_system
+            sys_name = v.storage_system_name
             if not sys_name:
                 continue
             
@@ -855,7 +855,7 @@ def get_top_systems_by_usage(
                 }
             
             # Use provisioned_capacity_gib or capacity_gib
-            capacity = v.provisioned_capacity_gib or v.capacity_gib or 0
+            capacity = v.provisioned_capacity_gib or 0
             used = v.used_capacity_gib or 0
             
             system_data[sys_name]['total_gib'] += capacity
@@ -919,14 +919,14 @@ def get_utilization_distribution(db: Session, report_date: date) -> List[Dict]:
         # Aggregate by storage system
         system_utils = {}
         for v in volumes:
-            sys_name = v.storage_system
+            sys_name = v.storage_system_name
             if not sys_name:
                 continue
             
             if sys_name not in system_utils:
                 system_utils[sys_name] = {'total': 0, 'used': 0}
             
-            capacity = v.provisioned_capacity_gib or v.capacity_gib or 0
+            capacity = v.provisioned_capacity_gib or 0
             used = v.used_capacity_gib or 0
             
             system_utils[sys_name]['total'] += capacity
@@ -1021,11 +1021,11 @@ def get_forecasting_data(db: Session, report_date: date, limit: int = 10) -> Lis
     # Aggregate by pool
     pool_data = {}
     for v in volumes:
-        pool_key = (v.pool_name, v.storage_system)
+        pool_key = (v.pool, v.storage_system_name)
         if pool_key not in pool_data:
             pool_data[pool_key] = {'total': 0, 'used': 0}
         
-        capacity = v.provisioned_capacity_gib or v.capacity_gib or 0
+        capacity = v.provisioned_capacity_gib or 0
         used = v.used_capacity_gib or 0
         
         pool_data[pool_key]['total'] += capacity
@@ -1074,7 +1074,7 @@ def get_storage_types_distribution(db: Session, report_date: date) -> List[Dict]
     
     # Aggregate all capacity (no type info in volumes table)
     total_capacity_gib = sum(
-        (v.provisioned_capacity_gib or v.capacity_gib or 0) for v in volumes
+        (v.provisioned_capacity_gib or 0) for v in volumes
     )
     
     return [{'type': 'Storage', 'capacity_tb': round(gib_to_tb(total_capacity_gib), 2)}]
@@ -1116,8 +1116,8 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     ).outerjoin(
         TenantPoolMapping,
         and_(
-            TenantPoolMapping.pool_name == CapacityVolume.pool_name,
-            TenantPoolMapping.storage_system == CapacityVolume.storage_system
+            TenantPoolMapping.pool_name == CapacityVolume.pool,
+            TenantPoolMapping.storage_system == CapacityVolume.storage_system_name
         )
     ).outerjoin(
         Tenant,
@@ -1133,16 +1133,11 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     hierarchy = {}
     
     for volume, tenant_name, tenant_id in results:
-        system = volume.storage_system or 'Unknown System'
-        pool = volume.pool_name or 'Unknown Pool'
+        system = volume.storage_system_name or 'Unknown System'
+        pool = volume.pool or 'Unknown Pool'
         tenant = tenant_name or 'UNKNOWN'
         
-        # Handle both column name variations
-        try:
-            provisioned = volume.provisioned_capacity_gib or 0
-        except AttributeError:
-            provisioned = getattr(volume, 'capacity_gib', 0) or 0
-        
+        provisioned = volume.provisioned_capacity_gib or 0
         used = volume.used_capacity_gib or 0
         available = volume.available_capacity_gib or 0
         
