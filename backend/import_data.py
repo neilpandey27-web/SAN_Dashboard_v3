@@ -54,6 +54,100 @@ def get_or_create_cli_user(db: Session):
     return cli_user
 
 
+def create_sample_tenant_mappings(db: Session, report_date: date):
+    """
+    Create sample tenant-pool mappings for demonstration.
+    Maps pools to tenants based on naming patterns.
+    """
+    from app.db.models import Tenant, TenantPoolMapping, CapacityVolume
+    
+    print(f"\n{'='*70}")
+    print(f"🔗 Creating Sample Tenant-Pool Mappings")
+    print(f"{'='*70}\n")
+    
+    # Get or create sample tenants
+    tenant_mapping = {
+        'Marketing': 'Marketing Department',
+        'Engineering': 'Engineering Department',
+        'Finance': 'Finance Department',
+        'Operations': 'Operations Department'
+    }
+    
+    tenants = {}
+    for tenant_name, description in tenant_mapping.items():
+        tenant = db.query(Tenant).filter(Tenant.name == tenant_name).first()
+        if not tenant:
+            tenant = Tenant(name=tenant_name, description=description)
+            db.add(tenant)
+            db.flush()
+            print(f"✅ Created tenant: {tenant_name}")
+        tenants[tenant_name] = tenant
+    
+    # Get UNKNOWN tenant
+    unknown_tenant = db.query(Tenant).filter(Tenant.name == 'UNKNOWN').first()
+    if unknown_tenant:
+        tenants['UNKNOWN'] = unknown_tenant
+    
+    db.commit()
+    
+    # Get unique pools from capacity_volumes
+    pools = db.query(
+        CapacityVolume.pool,
+        CapacityVolume.storage_system_name
+    ).filter(
+        CapacityVolume.report_date == report_date,
+        CapacityVolume.pool.isnot(None)
+    ).distinct().all()
+    
+    if not pools:
+        print("⚠️  No pools found in capacity_volumes table")
+        return
+    
+    print(f"📋 Found {len(pools)} unique pools\n")
+    
+    # Assign pools to tenants based on simple pattern
+    # This is just for demo - in production, users upload CSV mappings
+    mapping_count = 0
+    for pool_name, system_name in pools:
+        # Check if mapping already exists
+        existing = db.query(TenantPoolMapping).filter(
+            TenantPoolMapping.pool_name == pool_name,
+            TenantPoolMapping.storage_system == system_name
+        ).first()
+        
+        if existing:
+            continue
+        
+        # Assign tenant based on pool name pattern (demo logic)
+        tenant_name = None
+        pool_lower = pool_name.lower() if pool_name else ''
+        
+        if 'pool1' in pool_lower or 'pool2' in pool_lower or 'aggr1' in pool_lower:
+            tenant_name = 'Marketing'
+        elif 'pool3' in pool_lower or 'pool4' in pool_lower or 'aggr2' in pool_lower:
+            tenant_name = 'Engineering'
+        elif 'pool5' in pool_lower or 'pool6' in pool_lower or 'aggr3' in pool_lower:
+            tenant_name = 'Finance'
+        elif 'pool7' in pool_lower or 'pool8' in pool_lower or 'aggr4' in pool_lower:
+            tenant_name = 'Operations'
+        # else: leave unmapped (will show as UNKNOWN in treemap)
+        
+        if tenant_name and tenant_name in tenants:
+            mapping = TenantPoolMapping(
+                tenant_id=tenants[tenant_name].id,
+                pool_name=pool_name,
+                storage_system=system_name
+            )
+            db.add(mapping)
+            mapping_count += 1
+            print(f"   ✅ {pool_name} ({system_name}) → {tenant_name}")
+    
+    db.commit()
+    
+    print(f"\n✅ Created {mapping_count} tenant-pool mappings")
+    print(f"{'='*70}\n")
+
+
 def import_excel_file(file_path: str, user_id: int = None, dry_run: bool = False):
     """
     Import Excel file directly to database.
@@ -261,6 +355,9 @@ def import_excel_file(file_path: str, user_id: int = None, dry_run: bool = False
             upload_log.duration_seconds = duration
             
             db.commit()
+            
+            # Create sample tenant-pool mappings if none exist
+            create_sample_tenant_mappings(db, report_date)
             
             print(f"{'='*70}")
             print(f"✅ Import Completed Successfully!")

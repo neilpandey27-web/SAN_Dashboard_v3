@@ -1231,8 +1231,11 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
             
             # Only show tenants that have pools (hide empty tenants)
             if tenant_capacity > 0:
+                # Make tenant node name unique by combining system and tenant
+                unique_tenant_name = f"{system_name}|{tenant_name}"
+                
                 weighted_result.append({
-                    'name': tenant_name,
+                    'name': unique_tenant_name,
                     'storage_system': system_name,
                     'tenant_name': tenant_name,
                     'total_capacity_gib': tenant_capacity,
@@ -1248,7 +1251,7 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
                     
                     weighted_result.append({
                         'name': pool_name,
-                        'storage_system': tenant_name,  # Parent is tenant
+                        'storage_system': unique_tenant_name,  # Parent is unique tenant name
                         'tenant_name': tenant_name,
                         'actual_system': system_name,  # For comparison table reference
                         'total_capacity_gib': pool_data['provisioned'],
