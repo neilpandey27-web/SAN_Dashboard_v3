@@ -855,6 +855,8 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     """
     Get hierarchical data for treemap visualization with two calculation methods.
     
+    Source: capacity_volumes table (aggregated by pool, then system)
+    
     Returns both simple average and weighted average treemap data with full capacity details.
     Each node includes: total_capacity_gib, used_capacity_gib, available_capacity_gib, utilization_pct
     
@@ -864,20 +866,66 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
             'weighted_average': [...]  # Weighted by actual capacity usage
         }
     """
-    pools = db.query(StoragePool).filter(
-        StoragePool.report_date == report_date
+    # Query capacity_volumes as the source
+    volumes = db.query(CapacityVolume).filter(
+        CapacityVolume.report_date == report_date
     ).all()
+    
+    if not volumes:
+        return {'simple_average': [], 'weighted_average': []}
+    
+    # Aggregate volumes by pool
+    pool_data = {}
+    for vol in volumes:
+        pool_name = vol.pool
+        system_name = vol.storage_system
+        
+        # Handle both old and new column names
+        try:
+            provisioned = vol.provisioned_capacity_gib or 0
+        except AttributeError:
+            provisioned = getattr(vol, 'capacity_gib', 0) or 0
+        
+        used = vol.used_capacity_gib or 0
+        available = vol.available_capacity_gib or 0
+        
+        key = (pool_name, system_name)
+        if key not in pool_data:
+            pool_data[key] = {
+                'pool': pool_name,
+                'system': system_name,
+                'provisioned': 0,
+                'used': 0,
+                'available': 0
+            }
+        
+        pool_data[key]['provisioned'] += provisioned
+        pool_data[key]['used'] += used
+        pool_data[key]['available'] += available
+    
+    # Convert to list and calculate utilization
+    pools = []
+    for (pool_name, system_name), data in pool_data.items():
+        util_pct = (data['used'] / data['provisioned'] * 100) if data['provisioned'] > 0 else 0
+        pools.append({
+            'name': pool_name,
+            'storage_system_name': system_name,
+            'total_capacity_gib': data['provisioned'],
+            'used_capacity_gib': data['used'],
+            'available_capacity_gib': data['available'],
+            'utilization_pct': util_pct
+        })
     
     if not pools:
         return {'simple_average': [], 'weighted_average': []}
     
     # Sort pools by capacity (largest first)
-    sorted_pools = sorted(pools, key=lambda p: p.usable_capacity_gib or 0, reverse=True)
+    sorted_pools = sorted(pools, key=lambda p: p['total_capacity_gib'], reverse=True)
     
     # Calculate total capacity and adaptive threshold
-    total_capacity = sum(p.usable_capacity_gib or 0 for p in pools)
-    total_used = sum(p.used_capacity_gib or 0 for p in pools)
-    total_available = sum(p.available_capacity_gib or 0 for p in pools)
+    total_capacity = sum(p['total_capacity_gib'] for p in pools)
+    total_used = sum(p['used_capacity_gib'] for p in pools)
+    total_available = sum(p['available_capacity_gib'] for p in pools)
     
     # Adaptive threshold based on pool count
     if len(pools) > 50:
@@ -896,7 +944,7 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     simple_small_pools = {}
     
     # Root node - simple average
-    total_util_sum = sum(p.utilization_pct or 0 for p in pools)
+    total_util_sum = sum(p['utilization_pct'] for p in pools)
     avg_total_util = total_util_sum / len(pools) if pools else 0
     
     simple_result.append({
@@ -916,7 +964,7 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     system_pool_counts = {}
     
     for pool in pools:
-        sys_name = pool.storage_system_name
+        sys_name = pool['storage_system_name']
         if sys_name not in system_capacities:
             system_capacities[sys_name] = 0
             system_used[sys_name] = 0
@@ -924,18 +972,18 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
             system_utilizations[sys_name] = 0
             system_pool_counts[sys_name] = 0
         
-        system_capacities[sys_name] += (pool.usable_capacity_gib or 0)
-        system_used[sys_name] += (pool.used_capacity_gib or 0)
-        system_available[sys_name] += (pool.available_capacity_gib or 0)
-        system_utilizations[sys_name] += (pool.utilization_pct or 0)
+        system_capacities[sys_name] += pool['total_capacity_gib']
+        system_used[sys_name] += pool['used_capacity_gib']
+        system_available[sys_name] += pool['available_capacity_gib']
+        system_utilizations[sys_name] += pool['utilization_pct']
         system_pool_counts[sys_name] += 1
     
     # Add system nodes - simple average
     systems_added = {}
     for pool in pools:
-        if pool.storage_system_name not in systems_added:
-            systems_added[pool.storage_system_name] = True
-            sys_name = pool.storage_system_name
+        if pool['storage_system_name'] not in systems_added:
+            systems_added[pool['storage_system_name']] = True
+            sys_name = pool['storage_system_name']
             avg_util = system_utilizations[sys_name] / system_pool_counts[sys_name]
             
             simple_result.append({
@@ -957,26 +1005,26 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     
     # Add pool nodes - simple average
     for pool in sorted_pools:
-        pool_capacity = pool.usable_capacity_gib or 0
-        pool_used = pool.used_capacity_gib or 0
-        pool_available = pool.available_capacity_gib or 0
+        pool_capacity = pool['total_capacity_gib']
+        pool_used = pool['used_capacity_gib']
+        pool_available = pool['available_capacity_gib']
         
         if pool_capacity >= min_capacity_threshold:
             simple_result.append({
-                'name': pool.name,
-                'storage_system': pool.storage_system_name,
+                'name': pool['name'],
+                'storage_system': pool['storage_system_name'],
                 'total_capacity_gib': pool_capacity,
                 'used_capacity_gib': pool_used,
                 'available_capacity_gib': pool_available,
-                'utilization_pct': pool.utilization_pct or 0
+                'utilization_pct': pool['utilization_pct']
             })
         else:
             # Aggregate small pools
-            simple_small_pools[pool.storage_system_name]['capacity'] += pool_capacity
-            simple_small_pools[pool.storage_system_name]['used'] += pool_used
-            simple_small_pools[pool.storage_system_name]['available'] += pool_available
-            simple_small_pools[pool.storage_system_name]['count'] += 1
-            simple_small_pools[pool.storage_system_name]['total_util'] += (pool.utilization_pct or 0)
+            simple_small_pools[pool['storage_system_name']]['capacity'] += pool_capacity
+            simple_small_pools[pool['storage_system_name']]['used'] += pool_used
+            simple_small_pools[pool['storage_system_name']]['available'] += pool_available
+            simple_small_pools[pool['storage_system_name']]['count'] += 1
+            simple_small_pools[pool['storage_system_name']]['total_util'] += pool['utilization_pct']
     
     # Add aggregated small pools - simple average
     for system_name, small_data in simple_small_pools.items():
@@ -1012,9 +1060,9 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     # Add system nodes - weighted average
     systems_added_weighted = {}
     for pool in pools:
-        if pool.storage_system_name not in systems_added_weighted:
-            systems_added_weighted[pool.storage_system_name] = True
-            sys_name = pool.storage_system_name
+        if pool['storage_system_name'] not in systems_added_weighted:
+            systems_added_weighted[pool['storage_system_name']] = True
+            sys_name = pool['storage_system_name']
             
             sys_total = system_capacities[sys_name]
             sys_used_cap = system_used[sys_name]
@@ -1038,25 +1086,25 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     
     # Add pool nodes - weighted average
     for pool in sorted_pools:
-        pool_capacity = pool.usable_capacity_gib or 0
-        pool_used = pool.used_capacity_gib or 0
-        pool_available = pool.available_capacity_gib or 0
+        pool_capacity = pool['total_capacity_gib']
+        pool_used = pool['used_capacity_gib']
+        pool_available = pool['available_capacity_gib']
         
         if pool_capacity >= min_capacity_threshold:
             weighted_result.append({
-                'name': pool.name,
-                'storage_system': pool.storage_system_name,
+                'name': pool['name'],
+                'storage_system': pool['storage_system_name'],
                 'total_capacity_gib': pool_capacity,
                 'used_capacity_gib': pool_used,
                 'available_capacity_gib': pool_available,
-                'utilization_pct': pool.utilization_pct or 0
+                'utilization_pct': pool['utilization_pct']
             })
         else:
             # Aggregate small pools
-            weighted_small_pools[pool.storage_system_name]['capacity'] += pool_capacity
-            weighted_small_pools[pool.storage_system_name]['used'] += pool_used
-            weighted_small_pools[pool.storage_system_name]['available'] += pool_available
-            weighted_small_pools[pool.storage_system_name]['count'] += 1
+            weighted_small_pools[pool['storage_system_name']]['capacity'] += pool_capacity
+            weighted_small_pools[pool['storage_system_name']]['used'] += pool_used
+            weighted_small_pools[pool['storage_system_name']]['available'] += pool_available
+            weighted_small_pools[pool['storage_system_name']]['count'] += 1
     
     # Add aggregated small pools - weighted average
     for system_name, small_data in weighted_small_pools.items():
