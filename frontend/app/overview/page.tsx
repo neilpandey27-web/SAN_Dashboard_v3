@@ -886,116 +886,46 @@ export default function OverviewPage() {
                     </thead>
                     <tbody>
                       {(() => {
-                        // Group pools by tenant (using pool metadata or system info)
-                        // Since we don't have tenant data in treemap_data, we'll infer from pool/system names
-                        // Expected format from backend would include tenant info
-                        const tenantMap = new Map<string, {
-                          systems: Set<string>;
-                          pools: string[];
-                          utilizations: number[];
-                          used_capacity: number;
-                          total_capacity: number;
-                        }>();
-
-                        // Parse tenant from pool names or use a default grouping
-                        // In the screenshot: Tenant X, Tenant Y, Tenant Z, UNKNOWN
-                        treemap_data.simple_average.forEach((pool) => {
-                          if (!pool.storage_system || pool.storage_system === '' || pool.name === 'All Storage') {
-                            return; // Skip root nodes
-                          }
-
-                          // Extract tenant from pool name (expected format: Pool1, Pool2, etc.)
-                          // Since tenant info is not in current data, group by system for now
-                          // TODO: Backend should include tenant_name in treemap_data
-                          let tenant = 'UNKNOWN';
+                        // Backend now provides tenant-grouped data in simple_average
+                        // simple_average structure: tenant_name, systems, pools, simple_avg_utilization, weighted_avg_utilization
+                        
+                        return treemap_data.simple_average.map((tenant, index) => {
+                          // Parse pool names for display (format: "SystemA:Pool1")
+                          const poolNames = tenant.pools.map((p: string) => {
+                            const parts = p.split(':');
+                            return parts.length > 1 ? parts[1] : p;
+                          }).join(', ');
                           
-                          // Try to infer tenant from pool name patterns
-                          if (pool.name.match(/Pool[1-5]/)) {
-                            // Pool1, Pool2, Pool5 -> Tenant X
-                            if (pool.name === 'Pool1' || pool.name === 'Pool2' || pool.name === 'Pool5') {
-                              tenant = 'Tenant X';
-                            } else if (pool.name === 'Pool3') {
-                              tenant = 'Tenant Y';
-                            } else if (pool.name === 'Pool4') {
-                              tenant = 'UNKNOWN';
-                            }
-                          } else if (pool.name.match(/Pool[6-7]/)) {
-                            tenant = 'Tenant Z';
-                          }
+                          const simpleAvg = tenant.simple_avg_utilization || 0;
+                          const weightedAvg = tenant.weighted_avg_utilization || 0;
                           
-                          if (!tenantMap.has(tenant)) {
-                            tenantMap.set(tenant, {
-                              systems: new Set<string>(),
-                              pools: [],
-                              utilizations: [],
-                              used_capacity: 0,
-                              total_capacity: 0
-                            });
-                          }
+                          // Color coding for utilization
+                          let badgeClass = 'bg-success';
+                          const maxUtil = Math.max(simpleAvg, weightedAvg);
+                          if (maxUtil > 80) badgeClass = 'bg-danger';
+                          else if (maxUtil > 70) badgeClass = 'bg-warning';
                           
-                          const tenantData = tenantMap.get(tenant)!;
-                          tenantData.systems.add(pool.storage_system);
-                          tenantData.pools.push(pool.name);
-                          tenantData.utilizations.push(pool.utilization_pct || 0);
-                        });
-
-                        // Calculate weighted capacity for each tenant
-                        treemap_data.weighted_average.forEach((pool) => {
-                          if (!pool.storage_system || pool.storage_system === '' || pool.name === 'All Storage') {
-                            return;
-                          }
-
-                          let tenant = 'UNKNOWN';
-                          if (pool.name === 'Pool1' || pool.name === 'Pool2' || pool.name === 'Pool5') {
-                            tenant = 'Tenant X';
-                          } else if (pool.name === 'Pool3') {
-                            tenant = 'Tenant Y';
-                          } else if (pool.name === 'Pool6' || pool.name === 'Pool7') {
-                            tenant = 'Tenant Z';
-                          } else if (pool.name === 'Pool4') {
-                            tenant = 'UNKNOWN';
-                          }
-
-                          if (tenantMap.has(tenant)) {
-                            const tenantData = tenantMap.get(tenant)!;
-                            tenantData.used_capacity += (pool.used_capacity_gib || 0);
-                            tenantData.total_capacity += (pool.total_capacity_gib || 0);
-                          }
-                        });
-
-                        // Sort tenants (Tenant X, Y, Z, then UNKNOWN)
-                        const sortedTenants = Array.from(tenantMap.entries()).sort((a, b) => {
-                          if (a[0] === 'UNKNOWN') return 1;
-                          if (b[0] === 'UNKNOWN') return -1;
-                          return a[0].localeCompare(b[0]);
-                        });
-
-                        return sortedTenants.map(([tenantName, data]) => {
-                          const simple_avg = data.utilizations.length > 0
-                            ? data.utilizations.reduce((a, b) => a + b, 0) / data.utilizations.length
-                            : 0;
-                          
-                          const weighted_avg = data.total_capacity > 0
-                            ? (data.used_capacity / data.total_capacity) * 100
-                            : 0;
-
                           return (
-                            <tr key={tenantName}>
-                              <td><strong>{tenantName}</strong></td>
-                              <td><small>{Array.from(data.systems).join(', ')}</small></td>
+                            <tr key={index}>
                               <td>
+                                <strong>{tenant.tenant_name}</strong>
+                                <br />
                                 <small className="text-muted">
-                                  {data.pools.join(', ')}
+                                  {tenant.pool_count} pool{tenant.pool_count !== 1 ? 's' : ''}
                                 </small>
                               </td>
+                              <td>{tenant.systems}</td>
                               <td>
-                                <span className={`badge ${simple_avg > 80 ? 'bg-danger' : simple_avg > 70 ? 'bg-warning' : 'bg-success'}`}>
-                                  {simple_avg.toFixed(1)}%
+                                <small>{poolNames}</small>
+                              </td>
+                              <td>
+                                <span className={`badge ${badgeClass}`}>
+                                  {simpleAvg.toFixed(1)}%
                                 </span>
                               </td>
                               <td>
-                                <span className={`badge ${weighted_avg > 80 ? 'bg-danger' : weighted_avg > 70 ? 'bg-warning' : 'bg-success'}`}>
-                                  {weighted_avg.toFixed(1)}%
+                                <span className={`badge ${badgeClass}`}>
+                                  {weightedAvg.toFixed(1)}%
                                 </span>
                               </td>
                             </tr>

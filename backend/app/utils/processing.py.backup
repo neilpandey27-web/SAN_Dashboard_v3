@@ -851,241 +851,274 @@ def get_storage_types_distribution(db: Session, report_date: date) -> List[Dict]
     
     return [{'type': k, 'capacity_tb': round(v, 2)} for k, v in type_capacity.items()]
 
+
 def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     """
-    Get hierarchical data for treemap visualization with tenant integration.
+    Get hierarchical data for treemap visualization with two calculation methods.
     
-    Hierarchy: All Storage → Storage System → Tenant → Pool
+    Source: capacity_volumes table (aggregated by pool, then system)
     
-    Source: capacity_volumes table with tenant_pool_mappings join
-    
-    Returns both simple average and weighted average treemap data.
-    Treemap uses weighted_average only.
-    Comparison table uses both simple_average and weighted_average.
+    Returns both simple average and weighted average treemap data with full capacity details.
+    Each node includes: total_capacity_gib, used_capacity_gib, available_capacity_gib, utilization_pct
     
     Returns:
         {
-            'simple_average': [...],  # For comparison table (cross-system tenant grouping)
-            'weighted_average': [...]  # For treemap visualization (per-system tenant grouping)
+            'simple_average': [...],  # Average of pool utilization percentages
+            'weighted_average': [...]  # Weighted by actual capacity usage
         }
     """
-    # Ensure UNKNOWN tenant exists
-    unknown_tenant = db.query(Tenant).filter(Tenant.name == 'UNKNOWN').first()
-    if not unknown_tenant:
-        unknown_tenant = Tenant(
-            name='UNKNOWN',
-            description='Catch-all for unmapped pools'
-        )
-        db.add(unknown_tenant)
-        db.commit()
-        db.refresh(unknown_tenant)
-    
-    # Query capacity_volumes with tenant joins
-    results = db.query(
-        CapacityVolume,
-        Tenant.name.label('tenant_name'),
-        Tenant.id.label('tenant_id')
-    ).outerjoin(
-        TenantPoolMapping,
-        and_(
-            TenantPoolMapping.pool_name == CapacityVolume.pool_name,
-            TenantPoolMapping.storage_system == CapacityVolume.storage_system
-        )
-    ).outerjoin(
-        Tenant,
-        Tenant.id == TenantPoolMapping.tenant_id
-    ).filter(
+    # Query capacity_volumes as the source
+    volumes = db.query(CapacityVolume).filter(
         CapacityVolume.report_date == report_date
     ).all()
     
-    if not results:
+    if not volumes:
         return {'simple_average': [], 'weighted_average': []}
     
-    # Group volumes by system → tenant → pool
-    hierarchy = {}
-    
-    for volume, tenant_name, tenant_id in results:
-        system = volume.storage_system or 'Unknown System'
-        pool = volume.pool_name or 'Unknown Pool'
-        tenant = tenant_name or 'UNKNOWN'
+    # Aggregate volumes by pool
+    pool_data = {}
+    for vol in volumes:
+        pool_name = vol.pool
+        system_name = vol.storage_system
         
-        # Handle both column name variations
+        # Handle both old and new column names
         try:
-            provisioned = volume.provisioned_capacity_gib or 0
+            provisioned = vol.provisioned_capacity_gib or 0
         except AttributeError:
-            provisioned = getattr(volume, 'capacity_gib', 0) or 0
+            provisioned = getattr(vol, 'capacity_gib', 0) or 0
         
-        used = volume.used_capacity_gib or 0
-        available = volume.available_capacity_gib or 0
+        used = vol.used_capacity_gib or 0
+        available = vol.available_capacity_gib or 0
         
-        # Build hierarchy
-        if system not in hierarchy:
-            hierarchy[system] = {}
-        if tenant not in hierarchy[system]:
-            hierarchy[system][tenant] = {}
-        if pool not in hierarchy[system][tenant]:
-            hierarchy[system][tenant][pool] = {
+        key = (pool_name, system_name)
+        if key not in pool_data:
+            pool_data[key] = {
+                'pool': pool_name,
+                'system': system_name,
                 'provisioned': 0,
                 'used': 0,
-                'available': 0,
-                'volume_count': 0
+                'available': 0
             }
         
-        # Aggregate volumes into pools
-        hierarchy[system][tenant][pool]['provisioned'] += provisioned
-        hierarchy[system][tenant][pool]['used'] += used
-        hierarchy[system][tenant][pool]['available'] += available
-        hierarchy[system][tenant][pool]['volume_count'] += 1
+        pool_data[key]['provisioned'] += provisioned
+        pool_data[key]['used'] += used
+        pool_data[key]['available'] += available
     
-    # Calculate totals
-    total_capacity = 0
-    total_used = 0
-    total_available = 0
+    # Convert to list and calculate utilization
+    pools = []
+    for (pool_name, system_name), data in pool_data.items():
+        util_pct = (data['used'] / data['provisioned'] * 100) if data['provisioned'] > 0 else 0
+        pools.append({
+            'name': pool_name,
+            'storage_system_name': system_name,
+            'total_capacity_gib': data['provisioned'],
+            'used_capacity_gib': data['used'],
+            'available_capacity_gib': data['available'],
+            'utilization_pct': util_pct
+        })
     
-    for system_data in hierarchy.values():
-        for tenant_data in system_data.values():
-            for pool_data in tenant_data.values():
-                total_capacity += pool_data['provisioned']
-                total_used += pool_data['used']
-                total_available += pool_data['available']
+    if not pools:
+        return {'simple_average': [], 'weighted_average': []}
+    
+    # Sort pools by capacity (largest first)
+    sorted_pools = sorted(pools, key=lambda p: p['total_capacity_gib'], reverse=True)
+    
+    # Calculate total capacity and adaptive threshold
+    total_capacity = sum(p['total_capacity_gib'] for p in pools)
+    total_used = sum(p['used_capacity_gib'] for p in pools)
+    total_available = sum(p['available_capacity_gib'] for p in pools)
+    
+    # Adaptive threshold based on pool count
+    if len(pools) > 50:
+        threshold_pct = 0.02  # 2% for many pools
+    elif len(pools) > 30:
+        threshold_pct = 0.01  # 1% for moderate pools
+    else:
+        threshold_pct = 0.005  # 0.5% for few pools
+    
+    min_capacity_threshold = total_capacity * threshold_pct
     
     # ============================================================================
-    # WEIGHTED AVERAGE TREEMAP (for visualization)
-    # Hierarchy: All Storage → System → Tenant (per-system) → Pool
+    # SIMPLE AVERAGE TREEMAP (Method 1)
     # ============================================================================
-    weighted_result = []
+    simple_result = []
+    simple_small_pools = {}
     
-    # Root node
-    root_util = (total_used / total_capacity * 100) if total_capacity > 0 else 0
-    weighted_result.append({
+    # Root node - simple average
+    total_util_sum = sum(p['utilization_pct'] for p in pools)
+    avg_total_util = total_util_sum / len(pools) if pools else 0
+    
+    simple_result.append({
         'name': 'All Storage',
         'storage_system': '',
-        'tenant_name': None,
         'total_capacity_gib': total_capacity,
         'used_capacity_gib': total_used,
         'available_capacity_gib': total_available,
-        'utilization_pct': round(root_util, 1)
+        'utilization_pct': round(avg_total_util, 1)
     })
     
-    # System nodes
-    for system_name, tenants in hierarchy.items():
-        system_capacity = 0
-        system_used = 0
-        system_available = 0
+    # Calculate per-system metrics for simple average
+    system_capacities = {}
+    system_used = {}
+    system_available = {}
+    system_utilizations = {}
+    system_pool_counts = {}
+    
+    for pool in pools:
+        sys_name = pool['storage_system_name']
+        if sys_name not in system_capacities:
+            system_capacities[sys_name] = 0
+            system_used[sys_name] = 0
+            system_available[sys_name] = 0
+            system_utilizations[sys_name] = 0
+            system_pool_counts[sys_name] = 0
         
-        for tenant_data in tenants.values():
-            for pool_data in tenant_data.values():
-                system_capacity += pool_data['provisioned']
-                system_used += pool_data['used']
-                system_available += pool_data['available']
-        
-        system_util = (system_used / system_capacity * 100) if system_capacity > 0 else 0
-        
-        weighted_result.append({
-            'name': system_name,
-            'storage_system': 'All Storage',
-            'tenant_name': None,
-            'total_capacity_gib': system_capacity,
-            'used_capacity_gib': system_used,
-            'available_capacity_gib': system_available,
-            'utilization_pct': round(system_util, 1)
-        })
-        
-        # Tenant nodes (per-system)
-        for tenant_name, pools in tenants.items():
-            tenant_capacity = 0
-            tenant_used = 0
-            tenant_available = 0
-            pool_names = []
+        system_capacities[sys_name] += pool['total_capacity_gib']
+        system_used[sys_name] += pool['used_capacity_gib']
+        system_available[sys_name] += pool['available_capacity_gib']
+        system_utilizations[sys_name] += pool['utilization_pct']
+        system_pool_counts[sys_name] += 1
+    
+    # Add system nodes - simple average
+    systems_added = {}
+    for pool in pools:
+        if pool['storage_system_name'] not in systems_added:
+            systems_added[pool['storage_system_name']] = True
+            sys_name = pool['storage_system_name']
+            avg_util = system_utilizations[sys_name] / system_pool_counts[sys_name]
             
-            for pool_name, pool_data in pools.items():
-                tenant_capacity += pool_data['provisioned']
-                tenant_used += pool_data['used']
-                tenant_available += pool_data['available']
-                pool_names.append(pool_name)
+            simple_result.append({
+                'name': sys_name,
+                'storage_system': 'All Storage',
+                'total_capacity_gib': system_capacities[sys_name],
+                'used_capacity_gib': system_used[sys_name],
+                'available_capacity_gib': system_available[sys_name],
+                'utilization_pct': round(avg_util, 1)
+            })
             
-            tenant_util = (tenant_used / tenant_capacity * 100) if tenant_capacity > 0 else 0
-            
-            # Only show tenants that have pools (hide empty tenants)
-            if tenant_capacity > 0:
-                weighted_result.append({
-                    'name': tenant_name,
-                    'storage_system': system_name,
-                    'tenant_name': tenant_name,
-                    'total_capacity_gib': tenant_capacity,
-                    'used_capacity_gib': tenant_used,
-                    'available_capacity_gib': tenant_available,
-                    'utilization_pct': round(tenant_util, 1),
-                    'pool_count': len(pools)
-                })
-                
-                # Pool nodes (leaf nodes)
-                for pool_name, pool_data in pools.items():
-                    pool_util = (pool_data['used'] / pool_data['provisioned'] * 100) if pool_data['provisioned'] > 0 else 0
-                    
-                    weighted_result.append({
-                        'name': pool_name,
-                        'storage_system': tenant_name,  # Parent is tenant
-                        'tenant_name': tenant_name,
-                        'actual_system': system_name,  # For comparison table reference
-                        'total_capacity_gib': pool_data['provisioned'],
-                        'used_capacity_gib': pool_data['used'],
-                        'available_capacity_gib': pool_data['available'],
-                        'utilization_pct': round(pool_util, 1),
-                        'volume_count': pool_data['volume_count']
-                    })
+            simple_small_pools[sys_name] = {
+                'capacity': 0,
+                'used': 0,
+                'available': 0,
+                'count': 0,
+                'total_util': 0
+            }
+    
+    # Add pool nodes - simple average
+    for pool in sorted_pools:
+        pool_capacity = pool['total_capacity_gib']
+        pool_used = pool['used_capacity_gib']
+        pool_available = pool['available_capacity_gib']
+        
+        if pool_capacity >= min_capacity_threshold:
+            simple_result.append({
+                'name': pool['name'],
+                'storage_system': pool['storage_system_name'],
+                'total_capacity_gib': pool_capacity,
+                'used_capacity_gib': pool_used,
+                'available_capacity_gib': pool_available,
+                'utilization_pct': pool['utilization_pct']
+            })
+        else:
+            # Aggregate small pools
+            simple_small_pools[pool['storage_system_name']]['capacity'] += pool_capacity
+            simple_small_pools[pool['storage_system_name']]['used'] += pool_used
+            simple_small_pools[pool['storage_system_name']]['available'] += pool_available
+            simple_small_pools[pool['storage_system_name']]['count'] += 1
+            simple_small_pools[pool['storage_system_name']]['total_util'] += pool['utilization_pct']
+    
+    # Add aggregated small pools - simple average
+    for system_name, small_data in simple_small_pools.items():
+        if small_data['count'] > 0:
+            avg_util = small_data['total_util'] / small_data['count']
+            simple_result.append({
+                'name': f"Other Pools ({small_data['count']})",
+                'storage_system': system_name,
+                'total_capacity_gib': small_data['capacity'],
+                'used_capacity_gib': small_data['used'],
+                'available_capacity_gib': small_data['available'],
+                'utilization_pct': round(avg_util, 1)
+            })
     
     # ============================================================================
-    # SIMPLE AVERAGE DATA (for comparison table)
-    # Grouping: By Tenant ACROSS ALL SYSTEMS
+    # WEIGHTED AVERAGE TREEMAP (Method 2)
     # ============================================================================
-    simple_result = []
+    weighted_result = []
+    weighted_small_pools = {}
     
-    # Aggregate by tenant across all systems
-    tenant_aggregates = {}
+    # Root node - weighted average
+    weighted_total_util = (total_used / total_capacity * 100) if total_capacity > 0 else 0
     
-    for system_name, tenants in hierarchy.items():
-        for tenant_name, pools in tenants.items():
-            if tenant_name not in tenant_aggregates:
-                tenant_aggregates[tenant_name] = {
-                    'systems': set(),
-                    'pools': [],
-                    'pool_utilizations': [],
-                    'total_capacity': 0,
-                    'total_used': 0,
-                    'total_available': 0
-                }
+    weighted_result.append({
+        'name': 'All Storage',
+        'storage_system': '',
+        'total_capacity_gib': total_capacity,
+        'used_capacity_gib': total_used,
+        'available_capacity_gib': total_available,
+        'utilization_pct': round(weighted_total_util, 1)
+    })
+    
+    # Add system nodes - weighted average
+    systems_added_weighted = {}
+    for pool in pools:
+        if pool['storage_system_name'] not in systems_added_weighted:
+            systems_added_weighted[pool['storage_system_name']] = True
+            sys_name = pool['storage_system_name']
             
-            for pool_name, pool_data in pools.items():
-                tenant_aggregates[tenant_name]['systems'].add(system_name)
-                tenant_aggregates[tenant_name]['pools'].append(f"{system_name}:{pool_name}")
-                
-                pool_util = (pool_data['used'] / pool_data['provisioned'] * 100) if pool_data['provisioned'] > 0 else 0
-                tenant_aggregates[tenant_name]['pool_utilizations'].append(pool_util)
-                
-                tenant_aggregates[tenant_name]['total_capacity'] += pool_data['provisioned']
-                tenant_aggregates[tenant_name]['total_used'] += pool_data['used']
-                tenant_aggregates[tenant_name]['total_available'] += pool_data['available']
+            sys_total = system_capacities[sys_name]
+            sys_used_cap = system_used[sys_name]
+            weighted_sys_util = (sys_used_cap / sys_total * 100) if sys_total > 0 else 0
+            
+            weighted_result.append({
+                'name': sys_name,
+                'storage_system': 'All Storage',
+                'total_capacity_gib': sys_total,
+                'used_capacity_gib': sys_used_cap,
+                'available_capacity_gib': system_available[sys_name],
+                'utilization_pct': round(weighted_sys_util, 1)
+            })
+            
+            weighted_small_pools[sys_name] = {
+                'capacity': 0,
+                'used': 0,
+                'available': 0,
+                'count': 0
+            }
     
-    # Build simple average result for comparison table
-    for tenant_name, data in tenant_aggregates.items():
-        simple_avg = sum(data['pool_utilizations']) / len(data['pool_utilizations']) if data['pool_utilizations'] else 0
-        weighted_avg = (data['total_used'] / data['total_capacity'] * 100) if data['total_capacity'] > 0 else 0
+    # Add pool nodes - weighted average
+    for pool in sorted_pools:
+        pool_capacity = pool['total_capacity_gib']
+        pool_used = pool['used_capacity_gib']
+        pool_available = pool['available_capacity_gib']
         
-        simple_result.append({
-            'tenant_name': tenant_name,
-            'systems': ', '.join(sorted(data['systems'])),
-            'pools': data['pools'],
-            'pool_count': len(data['pools']),
-            'total_capacity_gib': data['total_capacity'],
-            'used_capacity_gib': data['total_used'],
-            'available_capacity_gib': data['total_available'],
-            'simple_avg_utilization': round(simple_avg, 1),
-            'weighted_avg_utilization': round(weighted_avg, 1)
-        })
+        if pool_capacity >= min_capacity_threshold:
+            weighted_result.append({
+                'name': pool['name'],
+                'storage_system': pool['storage_system_name'],
+                'total_capacity_gib': pool_capacity,
+                'used_capacity_gib': pool_used,
+                'available_capacity_gib': pool_available,
+                'utilization_pct': pool['utilization_pct']
+            })
+        else:
+            # Aggregate small pools
+            weighted_small_pools[pool['storage_system_name']]['capacity'] += pool_capacity
+            weighted_small_pools[pool['storage_system_name']]['used'] += pool_used
+            weighted_small_pools[pool['storage_system_name']]['available'] += pool_available
+            weighted_small_pools[pool['storage_system_name']]['count'] += 1
     
-    # Sort by tenant name (UNKNOWN last)
-    simple_result.sort(key=lambda x: (x['tenant_name'] == 'UNKNOWN', x['tenant_name']))
+    # Add aggregated small pools - weighted average
+    for system_name, small_data in weighted_small_pools.items():
+        if small_data['count'] > 0:
+            weighted_small_util = (small_data['used'] / small_data['capacity'] * 100) if small_data['capacity'] > 0 else 0
+            weighted_result.append({
+                'name': f"Other Pools ({small_data['count']})",
+                'storage_system': system_name,
+                'total_capacity_gib': small_data['capacity'],
+                'used_capacity_gib': small_data['used'],
+                'available_capacity_gib': small_data['available'],
+                'utilization_pct': round(weighted_small_util, 1)
+            })
     
     return {
         'simple_average': simple_result,
