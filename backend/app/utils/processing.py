@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime, date
 from typing import Dict, List, Tuple, Optional, Any
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, and_, or_
 import io
 
 from app.db.models import (
@@ -1079,13 +1079,18 @@ def get_storage_types_distribution(db: Session, report_date: date) -> List[Dict]
     
     return [{'type': 'Storage', 'capacity_tb': round(gib_to_tb(total_capacity_gib), 2)}]
 
-def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
+def get_treemap_data(db: Session, report_date: date, tenant_ids: Optional[List[int]] = None) -> Dict[str, List[Dict]]:
     """
     Get hierarchical data for treemap visualization with tenant integration.
     
     Hierarchy: All Storage → Storage System → Tenant → Pool
     
     Source: capacity_volumes table with tenant_pool_mappings join
+    
+    Args:
+        db: Database session
+        report_date: Report date to query
+        tenant_ids: Optional list of tenant IDs to filter by (for non-admin users)
     
     Returns both simple average and weighted average treemap data.
     Treemap uses weighted_average only.
@@ -1097,34 +1102,47 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
             'weighted_average': [...]  # For treemap visualization (per-system tenant grouping)
         }
     """
-    # Ensure UNKNOWN tenant exists
-    unknown_tenant = db.query(Tenant).filter(Tenant.name == 'UNKNOWN').first()
-    if not unknown_tenant:
-        unknown_tenant = Tenant(
-            name='UNKNOWN',
-            description='Catch-all for unmapped pools'
+    try:
+        # Ensure UNKNOWN tenant exists
+        unknown_tenant = db.query(Tenant).filter(Tenant.name == 'UNKNOWN').first()
+        if not unknown_tenant:
+            unknown_tenant = Tenant(
+                name='UNKNOWN',
+                description='Catch-all for unmapped pools'
+            )
+            db.add(unknown_tenant)
+            db.commit()
+            db.refresh(unknown_tenant)
+        
+        # Query capacity_volumes with tenant joins
+        query = db.query(
+            CapacityVolume,
+            Tenant.name.label('tenant_name'),
+            Tenant.id.label('tenant_id')
+        ).outerjoin(
+            TenantPoolMapping,
+            and_(
+                TenantPoolMapping.pool_name == CapacityVolume.pool,
+                TenantPoolMapping.storage_system == CapacityVolume.storage_system_name
+            )
+        ).outerjoin(
+            Tenant,
+            Tenant.id == TenantPoolMapping.tenant_id
+        ).filter(
+            CapacityVolume.report_date == report_date
         )
-        db.add(unknown_tenant)
-        db.commit()
-        db.refresh(unknown_tenant)
-    
-    # Query capacity_volumes with tenant joins
-    results = db.query(
-        CapacityVolume,
-        Tenant.name.label('tenant_name'),
-        Tenant.id.label('tenant_id')
-    ).outerjoin(
-        TenantPoolMapping,
-        and_(
-            TenantPoolMapping.pool_name == CapacityVolume.pool,
-            TenantPoolMapping.storage_system == CapacityVolume.storage_system_name
-        )
-    ).outerjoin(
-        Tenant,
-        Tenant.id == TenantPoolMapping.tenant_id
-    ).filter(
-        CapacityVolume.report_date == report_date
-    ).all()
+        
+        # Apply tenant filtering if provided (for non-admin users)
+        if tenant_ids:
+            # Include volumes that belong to specified tenants OR are unmapped (UNKNOWN)
+            query = query.filter(
+                or_(
+                    TenantPoolMapping.tenant_id.in_(tenant_ids),
+                    TenantPoolMapping.tenant_id.is_(None)  # Include unmapped pools
+                )
+            )
+        
+        results = query.all()
     
     if not results:
         return {'simple_average': [], 'weighted_average': []}
@@ -1313,7 +1331,14 @@ def get_treemap_data(db: Session, report_date: date) -> Dict[str, List[Dict]]:
     # Sort by tenant name (UNKNOWN last)
     simple_result.sort(key=lambda x: (x['tenant_name'] == 'UNKNOWN', x['tenant_name']))
     
-    return {
-        'simple_average': simple_result,
-        'weighted_average': weighted_result
-    }
+        return {
+            'simple_average': simple_result,
+            'weighted_average': weighted_result
+        }
+    except Exception as e:
+        # Log error and return empty data gracefully
+        print(f"Error in get_treemap_data: {str(e)}")
+        return {
+            'simple_average': [],
+            'weighted_average': []
+        }

@@ -3,6 +3,7 @@ Application configuration using Pydantic Settings.
 Loads from environment variables or .env file.
 """
 from pydantic_settings import BaseSettings
+from pydantic import Field
 from typing import Optional, List
 from functools import lru_cache
 
@@ -30,7 +31,11 @@ class Settings(BaseSettings):
     # For SQLite (local only): "sqlite:///../db_files/storage_insights.db"
     
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+    CORS_ORIGINS: List[str] = Field(
+        default=["http://localhost:3000", "http://127.0.0.1:3000"],
+        env="CORS_ORIGINS",
+        description="Allowed CORS origins (comma-separated)"
+    )
     
     # SMTP Email Configuration
     SMTP_HOST: str = "smtp.gmail.com"

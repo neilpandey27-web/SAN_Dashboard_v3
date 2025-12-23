@@ -593,7 +593,7 @@ async def get_overview_data(
     utilization_dist = get_utilization_distribution(db, report_date)
     forecasting = get_forecasting_data(db, report_date, limit=10)
     storage_types = get_storage_types_distribution(db, report_date)
-    treemap = get_treemap_data(db, report_date)
+    treemap = get_treemap_data(db, report_date, tenant_ids)
 
     # Get top hosts by capacity
     hosts = db.query(CapacityHost).filter(
@@ -1359,7 +1359,7 @@ async def get_enhanced_overview(
 
     # Treemap data (hierarchical structure for visualization)
     from app.utils.processing import get_treemap_data
-    treemap_data = get_treemap_data(db, report_date)
+    treemap_data = get_treemap_data(db, report_date, None)  # No tenant filtering for enhanced view
 
     # Top 20 hosts by usage
     top_hosts = []
