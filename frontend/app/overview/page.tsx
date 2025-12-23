@@ -20,6 +20,15 @@ interface TreemapNode {
   used_capacity_gib: number;
   available_capacity_gib: number;
   utilization_pct: number;
+  tenant_name?: string;
+  actual_system?: string;
+  pool_count?: number;
+  volume_count?: number;
+  // For comparison table (simple_average data structure)
+  systems?: string;
+  pools?: string[];
+  simple_avg_utilization?: number;
+  weighted_avg_utilization?: number;
 }
 
 interface OverviewData {
