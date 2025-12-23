@@ -1121,10 +1121,7 @@ def get_treemap_data(db: Session, report_date: date, tenant_ids: Optional[List[i
             Tenant.id.label('tenant_id')
         ).outerjoin(
             TenantPoolMapping,
-            and_(
-                TenantPoolMapping.pool_name == CapacityVolume.pool,
-                TenantPoolMapping.storage_system == CapacityVolume.storage_system_name
-            )
+            TenantPoolMapping.pool_name == CapacityVolume.pool
         ).outerjoin(
             Tenant,
             Tenant.id == TenantPoolMapping.tenant_id
