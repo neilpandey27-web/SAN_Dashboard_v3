@@ -1,0 +1,64 @@
+# Exclude existing archives and duplicates
+SAN_Dashboard_v3_FIXED.tar.gz
+SAN_Dashboard_v3_complete.zip
+SAN_Dashboard_v3_tenant_filter_complete.tar.gz
+W64qUIlG.png
+SAN_Dashboard_v3/
+
+# Exclude node_modules
+node_modules/
+frontend/node_modules/
+backend/node_modules/
+
+# Exclude Python cache and virtual environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+backend/venv/
+backend/.venv/
+
+# Exclude build artifacts
+frontend/.next/
+frontend/build/
+frontend/dist/
+backend/dist/
+backend/build/
+
+# Exclude database files
+*.db
+*.sqlite
+*.sqlite3
+db_files/*.db
+
+# Exclude logs
+*.log
+logs/
+npm-debug.log*
+
+# Exclude OS files
+.DS_Store
+Thumbs.db
+
+# Exclude IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Exclude git
+.git/
+.gitignore
+
+# Exclude environment files (users should create their own)
+.env
+.env.local
+backend/.env
+frontend/.env
+
+# Exclude uploads
+backend/uploads/
