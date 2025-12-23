@@ -900,13 +900,15 @@ export default function OverviewPage() {
                         
                         return treemap_data.simple_average.map((tenant, index) => {
                           // Parse pool names for display (format: "SystemA:Pool1")
-                          const poolNames = tenant.pools.map((p: string) => {
+                          const poolNames = (tenant.pools || []).map((p: string) => {
                             const parts = p.split(':');
                             return parts.length > 1 ? parts[1] : p;
                           }).join(', ');
                           
-                          const simpleAvg = tenant.simple_avg_utilization || 0;
-                          const weightedAvg = tenant.weighted_avg_utilization || 0;
+                          const simpleAvg = tenant.simple_avg_utilization ?? 0;
+                          const weightedAvg = tenant.weighted_avg_utilization ?? 0;
+                          const poolCount = tenant.pool_count ?? 0;
+                          const systemsList = tenant.systems ?? 'N/A';
                           
                           // Color coding for utilization
                           let badgeClass = 'bg-success';
@@ -920,10 +922,10 @@ export default function OverviewPage() {
                                 <strong>{tenant.tenant_name}</strong>
                                 <br />
                                 <small className="text-muted">
-                                  {tenant.pool_count} pool{tenant.pool_count !== 1 ? 's' : ''}
+                                  {poolCount} pool{poolCount !== 1 ? 's' : ''}
                                 </small>
                               </td>
-                              <td>{tenant.systems}</td>
+                              <td>{systemsList}</td>
                               <td>
                                 <small>{poolNames}</small>
                               </td>
